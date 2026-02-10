@@ -9,6 +9,7 @@ Complete guide to all documentation resources for the ThoughtExpense backend API
 | Document | Purpose | Audience |
 |----------|---------|----------|
 | [API_DOCUMENTATION.md](#api-documentation) | Complete API reference | Developers |
+| [COMMON_ERRORS.md](#common-errors-guide) | Troubleshooting guide | All developers |
 | [openapi.yaml](#openapi-specification) | OpenAPI 3.0 spec | Tools/Devs |
 | [API_QUICK_START.md](#quick-start-guide) | Get started in 5 min | New users |
 | [README.md](#readme) | Project overview | Everyone |
@@ -38,6 +39,40 @@ Complete guide to all documentation resources for the ThoughtExpense backend API
 - ✅ Changelog
 
 **Use when**: You need detailed information about any API endpoint
+
+---
+
+### Common Errors Guide
+**File**: `COMMON_ERRORS.md`  
+**Size**: ~25KB  
+**Audience**: All developers (especially helpful for debugging)
+
+**Contents**:
+- ✅ JSON parsing errors (trailing commas, quotes, etc.)
+- ✅ Authentication errors (401, invalid tokens)
+- ✅ Validation errors (422, field-specific)
+- ✅ Database errors (404, constraints)
+- ✅ Rate limiting (429)
+- ✅ AI service errors (OpenAI, Pinecone)
+- ✅ Connection errors (ECONNREFUSED, timeout)
+- ✅ Development errors (TypeScript, build)
+- ✅ Production errors (env variables)
+- ✅ Quick fixes and debugging tips
+- ✅ Error prevention best practices
+
+**Use when**: 
+- ❌ You encounter any error
+- 🔍 You need to debug an issue
+- 🛡️ You want to prevent errors
+- 📋 You need error response format reference
+
+**Highlights**:
+- Real error examples with explanations
+- Side-by-side wrong vs. correct formats
+- Common mistakes documented
+- Quick reference for valid JSON
+- HTTP status code guide
+- Debugging checklists
 
 ---
 

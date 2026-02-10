@@ -122,7 +122,11 @@ curl http://localhost:3001/health
 
 Should return:
 ```json
-{"status":"ok","timestamp":"...","uptime":...}
+{
+  "status": "ok",
+  "timestamp": "2024-01-15T10:30:00.000Z",
+  "uptime": 123.456
+}
 ```
 
 ### 9. Create Your First User

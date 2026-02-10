@@ -163,9 +163,7 @@ All responses follow this structure:
 {
   "success": true,
   "message": "Optional success message",
-  "data": {
-    // Response data here
-  }
+  "data": {}
 }
 ```
 

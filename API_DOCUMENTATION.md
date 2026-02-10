@@ -902,7 +902,7 @@ None required
         "userId": "user-uuid",
         "type": "weekly",
         "content": "Transport costs appear frequently but amounts are small.",
-        "metadata": { "..." },
+        "metadata": {},
         "period": "2024-01-15T00:00:00.000Z",
         "createdAt": "2024-01-15T10:30:00.000Z"
       }
@@ -910,8 +910,16 @@ None required
     "summary": {
       "totalSpent": 450.75,
       "currency": "USD",
-      "byCategory": { "..." },
-      "percentages": { "..." },
+      "byCategory": {
+        "Food": 215.50,
+        "Transport": 87,
+        "Entertainment": 15
+      },
+      "percentages": {
+        "Food": "47.81",
+        "Transport": "19.30",
+        "Entertainment": "3.33"
+      },
       "topCategories": ["Food", "Transport", "Entertainment"]
     }
   }
@@ -973,7 +981,7 @@ Retrieve previously generated insights.
         "userId": "user-uuid",
         "type": "weekly",
         "content": "Food spending increased 18% compared to last week.",
-        "metadata": { "..." },
+        "metadata": {},
         "period": "2024-01-15T00:00:00.000Z",
         "createdAt": "2024-01-15T10:30:00.000Z"
       }
