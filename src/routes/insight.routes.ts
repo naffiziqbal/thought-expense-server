@@ -1,4 +1,4 @@
-import express from 'express';
+import express, { Router } from 'express';
 import { query } from 'express-validator';
 import {
   generateWeeklyInsights,
@@ -7,7 +7,7 @@ import {
 import { protect } from '../middleware/auth.middleware';
 import { validate } from '../middleware/validation.middleware';
 
-const router = express.Router();
+const router: Router = express.Router();
 
 // All routes are protected
 router.use(protect);

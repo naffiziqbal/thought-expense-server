@@ -1,10 +1,10 @@
-import express from 'express';
+import express, { Router } from 'express';
 import { body } from 'express-validator';
 import { signup, login, getMe } from '../controllers/auth.controller';
 import { protect } from '../middleware/auth.middleware';
 import { validate } from '../middleware/validation.middleware';
 
-const router = express.Router();
+const router: Router = express.Router();
 
 // Validation rules
 const signupValidation = [
