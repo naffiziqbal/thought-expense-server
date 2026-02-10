@@ -7,7 +7,8 @@ import {
   updateExpense,
   deleteExpense,
   getCategorySummary,
-  getSimilarExpenses
+  getSimilarExpenses,
+  suggestCategoryForDescription
 } from '../controllers/expense.controller';
 import { protect } from '../middleware/auth.middleware';
 import { validate } from '../middleware/validation.middleware';
@@ -48,6 +49,7 @@ const queryExpensesValidation = [
 router.post('/parse', parseExpensesValidation, validate, parseAndCreateExpenses);
 router.get('/', queryExpensesValidation, validate, getExpenses);
 router.get('/summary', getCategorySummary);
+router.get('/suggest-category', query('description').notEmpty().isString(), validate, suggestCategoryForDescription);
 router.get('/:id', param('id').isUUID(), validate, getExpenseById);
 router.get('/:id/similar', param('id').isUUID(), validate, getSimilarExpenses);
 router.patch('/:id', param('id').isUUID(), updateExpenseValidation, validate, updateExpense);

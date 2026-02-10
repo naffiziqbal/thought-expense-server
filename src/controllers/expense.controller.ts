@@ -2,7 +2,7 @@ import { Response, NextFunction } from 'express';
 import prisma from '../config/prisma';
 import { asyncHandler } from '../middleware/error.middleware';
 import { AppError } from '../middleware/error.middleware';
-import { parseExpenses } from '../services/gemini.service';
+import { parseExpenses, suggestCategory } from '../services/gemini.service';
 import { getUserContext, storeExpenseEmbedding, updateCategoryMapping, findSimilarExpenses, deleteExpenseEmbedding } from '../services/rag.service';
 import { setCache, getCache, deleteCache, deleteCachePattern } from '../config/redis';
 import { AuthRequest } from '../middleware/auth.middleware';
@@ -178,14 +178,40 @@ export const updateExpense = asyncHandler(async (req: AuthRequest, res: Response
     updates.confidence = 1.0;
   }
 
+  // Check if category was manually changed (for RAG learning)
+  const categoryChanged = updates.category && expense.category !== updates.category;
+  const oldCategory = expense.category;
+
   // Update expense
   const updated = await prisma.expense.update({
     where: { id },
     data: {
       ...updates,
-      updatedAt: new Date()
+      updatedAt: new Date(),
+      // If category manually changed, set confidence to 1.0 (user correction)
+      confidence: categoryChanged ? 1.0 : expense.confidence
     }
   });
+
+  // If category was manually changed, teach RAG system
+  if (categoryChanged) {
+    console.log(`Learning: "${expense.description}" changed from "${oldCategory}" → "${updated.category}"`);
+    
+    // Extract keywords from description for learning
+    const keywords = expense.description.toLowerCase().split(/\s+/);
+    for (const keyword of keywords) {
+      if (keyword.length > 2) { // Skip very short words
+        updateCategoryMapping(userId, keyword, updated.category).catch(err => {
+          console.error('Failed to update category mapping:', err);
+        });
+      }
+    }
+    
+    // Also map the full description
+    updateCategoryMapping(userId, expense.description, updated.category).catch(err => {
+      console.error('Failed to update category mapping:', err);
+    });
+  }
 
   // If description or category changed, update embedding
   if (updates.description || updates.category) {
@@ -361,6 +387,42 @@ export const getSimilarExpenses = asyncHandler(async (req: AuthRequest, res: Res
     success: true,
     data: {
       similar: filtered
+    }
+  });
+});
+
+// @desc    Suggest category for description (RAG + AI)
+// @route   GET /api/expenses/suggest-category
+// @access  Private
+export const suggestCategoryForDescription = asyncHandler(async (req: AuthRequest, res: Response, next: NextFunction) => {
+  const { description } = req.query;
+  const userId = req.user!.id;
+
+  if (!description || typeof description !== 'string') {
+    return next(new AppError('Description is required', 400));
+  }
+
+  // Get user's category history for context
+  const userContext = await getUserContext(userId);
+
+  // Get AI suggestion
+  const suggestion = await suggestCategory(description, userContext);
+
+  res.json({
+    success: true,
+    data: {
+      suggestedCategories: [
+        {
+          category: suggestion.category,
+          confidence: suggestion.confidence,
+          reason: 'Based on your spending patterns and expense context'
+        },
+        ...(suggestion.alternatives || []).map((alt: string) => ({
+          category: alt,
+          confidence: 0.7,
+          reason: 'Alternative suggestion'
+        }))
+      ]
     }
   });
 });

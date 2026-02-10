@@ -3,16 +3,16 @@ import { GoogleGenerativeAI } from '@google/generative-ai';
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || '');
 
 // System prompts
-const PARSING_SYSTEM_PROMPT = `You are an expense parsing assistant. Your job is to extract structured expense information from natural language input.
+const PARSING_SYSTEM_PROMPT = `You are an intelligent expense parsing assistant with access to the user's expense history. Your job is to extract structured expense information from natural language input and suggest the MOST SPECIFIC and ACCURATE category.
 
 RULES:
 1. Extract description, amount, category, AND date
 2. Handle MULTIPLE expenses in one input - parse ALL of them
 3. Be EXTREMELY flexible with input formats:
-   - Newlines: "coffee 10\nbread 20"
+   - Newlines: "coffee 10\\nbread 20"
    - Commas: "coffee 10, bread 20, rent 30"
    - Spaces only: "coffee 10 bread 20 rent 30"
-   - Mixed: "coffee 10, bread 20\nrent 30"
+   - Mixed: "coffee 10, bread 20\\nrent 30"
    - Natural language: "bought coffee for 10 dollars and bread 20"
 4. Parse DATES from natural language:
    - "yesterday" → calculate yesterday's date
@@ -23,18 +23,35 @@ RULES:
 6. Assign confidence score (0-1) based on clarity
 7. ALWAYS return an array, even for single expense
 
-CATEGORIES (choose one):
-- Food (groceries, restaurants, dining, coffee, bread, meals)
-- Transport (uber, taxi, fare, gas, parking)
-- Rent (rent, housing, apartment)
-- Utilities (electricity, water, internet, phone, bills)
-- Shopping (clothes, electronics, general shopping)
-- Entertainment (movies, games, subscriptions)
-- Healthcare (doctor, medicine, hospital)
-- Education (courses, books, tuition)
-- Personal Care (makeup, salon, grooming)
-- Fees (bank fees, service charges)
-- Other (anything else)
+CATEGORY ASSIGNMENT - CRITICAL:
+You are NOT limited to predefined categories. Suggest SPECIFIC, MEANINGFUL categories based on:
+1. USER'S PAST CATEGORIZATIONS (if provided in context)
+2. CONTEXT of the expense (business vs personal, location, purpose)
+3. SPECIFICITY (prefer "Coffee Shop" over "Food", "Gym Membership" over "Other")
+
+Examples of GOOD specific categories:
+- "Coffee Shop" (not just "Food")
+- "Business Meals" (for client/work meals)
+- "Gym Membership" (not "Other")
+- "Children's School" (not just "Education")
+- "Office Commute" (not just "Transport")
+- "Streaming Services" (not just "Entertainment")
+- "Pet Care" (specific category)
+- "Home Maintenance" (specific)
+- "Professional Development" (not just "Education")
+
+Examples of CONTEXT-AWARE categorization:
+- "coffee at starbucks" → "Coffee Shop"
+- "coffee at client meeting" → "Business Meals"
+- "uber to office" → "Office Commute"
+- "uber to airport" → "Travel"
+- "netflix subscription" → "Streaming Services"
+- "gym membership" → "Gym Membership"
+
+USER'S CATEGORY HISTORY (learn from this):
+{{USER_CONTEXT}}
+
+Use the user's past categorizations to maintain CONSISTENCY
 
 OUTPUT FORMAT (JSON array - MUST be array):
 [
@@ -42,27 +59,18 @@ OUTPUT FORMAT (JSON array - MUST be array):
     "description": "coffee",
     "amount": 10,
     "currency": "USD",
-    "category": "Food",
+    "category": "Coffee Shop",
     "confidence": 0.95,
     "date": "2024-01-15",
     "rawInput": "coffee 10"
-  },
-  {
-    "description": "mac mini",
-    "amount": 599,
-    "currency": "USD",
-    "category": "Shopping",
-    "confidence": 0.9,
-    "date": "2024-01-14",
-    "rawInput": "bought a mac mini yesterday"
   }
 ]
 
 CRITICAL: 
-- Parse ALL expenses from input. If "coffee 10 bread 20 rent 30", return 3 expense objects.
+- Parse ALL expenses from input
 - ALWAYS include date in ISO format (YYYY-MM-DD)
-- Calculate relative dates correctly (yesterday, last week, etc.)
 - Today is ${new Date().toISOString().split('T')[0]}
+- Be SPECIFIC with categories
 Be precise. Return ONLY valid JSON array with ALL expenses found.`;
 
 const INSIGHT_SYSTEM_PROMPT = `You are a financial insights assistant. Analyze expense data and provide helpful, non-judgmental observations.
@@ -110,66 +118,70 @@ export const parseExpenses = async (
   userContext: UserContext[] = []
 ): Promise<ParsedExpense[]> => {
   try {
-    const contextHint = userContext.length > 0 
-      ? `\n\nUSER CONTEXT (past patterns):\n${userContext.map(c => `"${c.keyword}" → ${c.category}`).join('\n')}`
-      : '';
+    // Build rich context from user's history
+    let contextHint = '';
+    if (userContext.length > 0) {
+      contextHint = '\n\nUSER\'S CATEGORY HISTORY (learn from this):\n';
+      userContext.forEach(c => {
+        const usage = c.confidence ? Math.round(c.confidence * 10) : 1;
+        contextHint += `  - "${c.keyword}" → "${c.category}" (used ${usage}x)\n`;
+      });
+      contextHint += '\nUse these patterns for CONSISTENCY. If similar expense exists, use same category.';
+    } else {
+      contextHint = '\n\nNO HISTORY: This is a new user. Suggest specific, meaningful categories.';
+    }
 
-    const userPrompt = `${PARSING_SYSTEM_PROMPT}
+    const systemPromptWithContext = PARSING_SYSTEM_PROMPT.replace('{{USER_CONTEXT}}', contextHint);
 
-Default currency: ${userCurrency}${contextHint}
+    const userPrompt = `${systemPromptWithContext}
+
+Default currency: ${userCurrency}
+Current date: ${new Date().toISOString().split('T')[0]}
 
 Parse this expense input:
 """
 ${rawInput}
 """
 
-Return JSON array of expenses.`;
+REMEMBER:
+- Suggest SPECIFIC categories (not generic)
+- Use user's patterns for consistency
+- Return ALL expenses as JSON array
 
-    // Use Gemini model
-    const model = genAI.getGenerativeModel({ 
-      model: process.env.PARSING_MODEL || 'gemini-2.5-flash',
-      generationConfig: {
-        temperature: 0.3,
-        responseMimeType: 'application/json'
-      }
-    });
+Return JSON array of expenses:`;
 
+    const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
     const result = await model.generateContent(userPrompt);
-    const response = result.response;
-    const content = response.text();
+    const responseText = result.response.text();
+
+    // Extract JSON from response
+    let jsonText = responseText.trim();
     
-    if (!content) {
-      throw new Error('No content returned from Gemini');
-    }
+    // Remove markdown code blocks
+    jsonText = jsonText.replace(/```json\n?/g, '').replace(/```\n?/g, '');
     
-    // Parse the JSON response
-    let parsed: any;
-    try {
-      parsed = JSON.parse(content);
-      // If the response is wrapped in an object with an array property, extract it
-      if (parsed.expenses && Array.isArray(parsed.expenses)) {
-        parsed = parsed.expenses;
-      } else if (!Array.isArray(parsed)) {
-        // If it's a single object, wrap it in an array
-        parsed = [parsed];
-      }
-    } catch (e) {
-      console.error('Failed to parse Gemini response:', content);
-      throw new Error('Invalid response format from AI');
+    // Try to find JSON array
+    const arrayMatch = jsonText.match(/\[[\s\S]*\]/);
+    if (arrayMatch) {
+      jsonText = arrayMatch[0];
     }
 
-    // Validate and sanitize each expense
-    const validatedExpenses: ParsedExpense[] = parsed.map((expense: any) => ({
-      description: expense.description || 'Unknown',
-      amount: parseFloat(expense.amount) || 0,
-      currency: expense.currency || userCurrency,
-      category: expense.category || 'Other',
-      confidence: parseFloat(expense.confidence) || 0.5,
-      date: expense.date || new Date().toISOString().split('T')[0],
-      rawInput: expense.rawInput || rawInput
+    const parsed = JSON.parse(jsonText);
+    
+    // Ensure it's an array
+    const expenses = Array.isArray(parsed) ? parsed : [parsed];
+
+    // Validate and normalize
+    return expenses.map(exp => ({
+      description: String(exp.description || '').trim(),
+      amount: parseFloat(exp.amount) || 0,
+      currency: String(exp.currency || userCurrency).toUpperCase(),
+      category: String(exp.category || 'Other').trim(),
+      confidence: parseFloat(exp.confidence) || 0.5,
+      date: exp.date || new Date().toISOString().split('T')[0],
+      rawInput: exp.rawInput || rawInput
     }));
 
-    return validatedExpenses;
   } catch (error: any) {
     console.error('Gemini parsing error:', error);
     throw new Error(`Failed to parse expenses: ${error.message}`);
@@ -177,83 +189,120 @@ Return JSON array of expenses.`;
 };
 
 /**
- * Generate insights from expense data using Gemini
+ * Suggest category for a description (for autocomplete/suggestions)
  */
-export const generateInsights = async (
-  expenses: any[],
-  summary: ExpenseSummary,
-  period: string = 'week'
-): Promise<string[]> => {
+export const suggestCategory = async (
+  description: string,
+  userContext: UserContext[] = []
+): Promise<{ category: string; confidence: number; alternatives?: string[] }> => {
   try {
-    const userPrompt = `${INSIGHT_SYSTEM_PROMPT}
-
-Analyze these expenses for the past ${period}:
-
-TOTAL SPENT: ${summary.totalSpent} ${summary.currency}
-
-CATEGORY BREAKDOWN:
-${Object.entries(summary.byCategory)
-  .map(([cat, amt]) => `- ${cat}: ${amt} ${summary.currency} (${summary.percentages[cat]}%)`)
-  .join('\n')}
-
-TOP CATEGORIES: ${summary.topCategories.join(', ')}
-TRANSACTION COUNT: ${expenses.length}
-
-Generate 2-3 brief, helpful insights about spending patterns.`;
-
-    const model = genAI.getGenerativeModel({ 
-      model: process.env.INSIGHTS_MODEL || 'gemini-2.5-flash',
-      generationConfig: {
-        temperature: 0.7,
-        maxOutputTokens: 300
-      }
-    });
-
-    const result = await model.generateContent(userPrompt);
-    const response = result.response;
-    const content = response.text();
-    
-    if (!content) {
-      throw new Error('No content returned from Gemini');
+    let contextHint = '';
+    if (userContext.length > 0) {
+      contextHint = 'User\'s past patterns:\n';
+      userContext.slice(0, 10).forEach(c => {
+        contextHint += `- "${c.keyword}" → "${c.category}"\n`;
+      });
     }
-    
-    // Split into individual insights
-    const insights = content
-      .split('\n')
-      .filter(line => line.trim().length > 0)
-      .map(line => line.replace(/^[\d\-\*\•]\s*/, '').trim())
-      .filter(line => line.length > 10)
-      .slice(0, 3);
 
-    return insights;
+    const prompt = `You are a category suggestion assistant. Based on the expense description, suggest the MOST SPECIFIC and ACCURATE category.
+
+${contextHint}
+
+Description: "${description}"
+
+Consider context and be specific. Examples:
+- "coffee at starbucks" → "Coffee Shop"
+- "uber to office" → "Office Commute"
+- "gym membership" → "Gym Membership"
+- "netflix" → "Streaming Services"
+
+Return JSON:
+{
+  "category": "Suggested Category",
+  "confidence": 0.9,
+  "alternatives": ["Alternative 1", "Alternative 2"]
+}`;
+
+    const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
+    const result = await model.generateContent(prompt);
+    let jsonText = result.response.text().trim();
+    
+    // Remove markdown
+    jsonText = jsonText.replace(/```json\n?/g, '').replace(/```\n?/g, '');
+    
+    const parsed = JSON.parse(jsonText);
+    return parsed;
+
   } catch (error: any) {
-    console.error('Gemini insights error:', error);
-    throw new Error(`Failed to generate insights: ${error.message}`);
+    console.error('Category suggestion error:', error);
+    return {
+      category: 'Other',
+      confidence: 0.5,
+      alternatives: []
+    };
   }
 };
 
 /**
- * Generate embeddings for expense description (for RAG) using Gemini
+ * Generate embedding for text (for RAG)
  */
 export const generateEmbedding = async (text: string): Promise<number[]> => {
   try {
-    // Use Gemini's embedding model with configurable dimensions
-    const model = genAI.getGenerativeModel({ 
-      model: 'gemini-embedding-001'
-    });
-
+    const model = genAI.getGenerativeModel({ model: 'text-embedding-004' });
     const result = await model.embedContent(text);
-    
-    const embedding = result.embedding;
-    
-    if (!embedding || !embedding.values) {
-      throw new Error('No embedding returned from Gemini');
-    }
-
-    // Return first 1024 dimensions to match Pinecone index
-    return embedding.values.slice(0, 1024);
+    return result.embedding.values;
   } catch (error: any) {
-    console.error('Gemini embedding error:', error);
+    console.error('Embedding generation error:', error);
     throw new Error(`Failed to generate embedding: ${error.message}`);
   }
 };
+
+/**
+ * Generate insights from expense data
+ */
+export const generateInsights = async (
+  expenses: any[],
+  summary: ExpenseSummary
+): Promise<string[]> => {
+  try {
+    if (expenses.length === 0) {
+      return ['No expenses to analyze yet. Start tracking to get insights!'];
+    }
+
+    const expenseList = expenses.slice(0, 50).map(e => 
+      `${e.description} (${e.category}): ${e.amount} ${e.currency}`
+    ).join('\n');
+
+    const prompt = `${INSIGHT_SYSTEM_PROMPT}
+
+EXPENSE DATA (last ${expenses.length} transactions):
+${expenseList}
+
+SUMMARY:
+- Total spent: ${summary.totalSpent} ${summary.currency}
+- Top categories: ${summary.topCategories.join(', ')}
+- Category breakdown: ${JSON.stringify(summary.byCategory)}
+
+Generate 2-3 helpful, non-judgmental insights about spending patterns.
+Focus on trends, comparisons, and interesting observations.
+
+Return as JSON array of strings:
+["Insight 1", "Insight 2", "Insight 3"]`;
+
+    const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
+    const result = await model.generateContent(prompt);
+    let jsonText = result.response.text().trim();
+    
+    // Remove markdown
+    jsonText = jsonText.replace(/```json\n?/g, '').replace(/```\n?/g, '');
+    
+    const insights = JSON.parse(jsonText);
+    return Array.isArray(insights) ? insights : [insights];
+
+  } catch (error: any) {
+    console.error('Insight generation error:', error);
+    return ['Unable to generate insights at this time.'];
+  }
+};
+
+export { ParsedExpense, UserContext, ExpenseSummary };

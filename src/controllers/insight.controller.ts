@@ -60,7 +60,7 @@ export const generateWeeklyInsights = asyncHandler(async (req: AuthRequest, res:
   };
 
   // Generate insights using AI
-  const insightTexts = await generateInsights(expenses, summary, 'week');
+  const insightTexts = await generateInsights(expenses, summary);
 
   // Store insights in database
   const createdInsights = await Promise.all(
