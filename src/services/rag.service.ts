@@ -1,5 +1,5 @@
 import prisma from '../config/prisma';
-import { generateEmbedding } from './openai.service';
+import { generateEmbedding } from './gemini.service';
 import { upsertExpenseVector, querySimilarExpenses, deleteExpenseVector } from './pinecone.service';
 
 interface UserContextItem {

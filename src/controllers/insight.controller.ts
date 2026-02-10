@@ -1,7 +1,7 @@
 import { Response } from 'express';
 import prisma from '../config/prisma';
 import { asyncHandler } from '../middleware/error.middleware';
-import { generateInsights } from '../services/openai.service';
+import { generateInsights } from '../services/gemini.service';
 import { setCache, getCache } from '../config/redis';
 import { AuthRequest } from '../middleware/auth.middleware';
 

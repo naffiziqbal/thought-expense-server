@@ -2,7 +2,7 @@ import { Response, NextFunction } from 'express';
 import prisma from '../config/prisma';
 import { asyncHandler } from '../middleware/error.middleware';
 import { AppError } from '../middleware/error.middleware';
-import { parseExpenses } from '../services/openai.service';
+import { parseExpenses } from '../services/gemini.service';
 import { getUserContext, storeExpenseEmbedding, updateCategoryMapping, findSimilarExpenses, deleteExpenseEmbedding } from '../services/rag.service';
 import { setCache, getCache, deleteCache, deleteCachePattern } from '../config/redis';
 import { AuthRequest } from '../middleware/auth.middleware';
@@ -36,7 +36,7 @@ export const parseAndCreateExpenses = asyncHandler(async (req: AuthRequest, res:
           category: expense.category,
           confidence: expense.confidence,
           rawInput: expense.rawInput || rawInput,
-          date: new Date()
+          date: new Date(expense.date)
         }
       });
 

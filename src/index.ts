@@ -7,6 +7,7 @@ import morgan from 'morgan';
 import rateLimit from 'express-rate-limit';
 
 import { connectRedis } from './config/redis';
+import { initPinecone } from './services/pinecone.service';
 import authRoutes from './routes/auth.routes';
 import expenseRoutes from './routes/expense.routes';
 import insightRoutes from './routes/insight.routes';
@@ -77,6 +78,10 @@ const startServer = async (): Promise<void> => {
     // Connect to Redis
     await connectRedis();
     console.log('✅ Redis connected');
+
+    // Initialize Pinecone
+    await initPinecone();
+    console.log('✅ Pinecone initialized');
 
     // Start server
     app.listen(PORT, () => {

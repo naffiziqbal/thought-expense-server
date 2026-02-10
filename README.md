@@ -29,10 +29,10 @@ The AI parses, categorizes, and learns from your patterns over time.
 ## 🏗️ Tech Stack
 
 ### Backend
-- **Node.js + Express**: RESTful API
+- **Node.js + Express**: RESTful API (TypeScript)
 - **PostgreSQL**: Primary database with Prisma ORM
 - **Redis**: Caching layer
-- **OpenAI GPT**: Expense parsing & insights
+- **Google Gemini 1.5**: Expense parsing & insights
 - **Pinecone**: Vector database for RAG
 
 ### Frontend (Coming Soon)
@@ -47,8 +47,8 @@ The AI parses, categorizes, and learns from your patterns over time.
 
 - Node.js 18+
 - Docker & Docker Compose
-- OpenAI API key
-- Pinecone account
+- Google Gemini API key ([Get one](https://makersuite.google.com/app/apikey))
+- Pinecone account ([Sign up](https://app.pinecone.io))
 
 ### Installation
 
