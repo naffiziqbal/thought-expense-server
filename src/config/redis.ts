@@ -1,0 +1,87 @@
+import { createClient, RedisClientType } from 'redis';
+
+let redisClient: RedisClientType | null = null;
+
+export const connectRedis = async (): Promise<RedisClientType> => {
+  try {
+    redisClient = createClient({
+      url: process.env.REDIS_URL || 'redis://localhost:6379',
+      socket: {
+        reconnectStrategy: (retries: number) => {
+          if (retries > 10) {
+            console.error('Redis: Max reconnection attempts reached');
+            return new Error('Redis reconnection failed');
+          }
+          return retries * 100; // Exponential backoff
+        }
+      }
+    });
+
+    redisClient.on('error', (err: Error) => {
+      console.error('Redis Client Error:', err);
+    });
+
+    redisClient.on('connect', () => {
+      console.log('Redis: Connected');
+    });
+
+    redisClient.on('reconnecting', () => {
+      console.log('Redis: Reconnecting...');
+    });
+
+    await redisClient.connect();
+    return redisClient;
+  } catch (error) {
+    console.error('Redis connection error:', error);
+    throw error;
+  }
+};
+
+export const getRedisClient = (): RedisClientType => {
+  if (!redisClient) {
+    throw new Error('Redis client not initialized. Call connectRedis first.');
+  }
+  return redisClient;
+};
+
+// Cache helpers
+export const setCache = async (key: string, value: any, ttl: number = 3600): Promise<void> => {
+  try {
+    const client = getRedisClient();
+    await client.setEx(key, ttl, JSON.stringify(value));
+  } catch (error) {
+    console.error('Redis setCache error:', error);
+  }
+};
+
+export const getCache = async <T = any>(key: string): Promise<T | null> => {
+  try {
+    const client = getRedisClient();
+    const data = await client.get(key);
+    return data ? JSON.parse(data) : null;
+  } catch (error) {
+    console.error('Redis getCache error:', error);
+    return null;
+  }
+};
+
+export const deleteCache = async (key: string): Promise<void> => {
+  try {
+    const client = getRedisClient();
+    await client.del(key);
+  } catch (error) {
+    console.error('Redis deleteCache error:', error);
+  }
+};
+
+export const deleteCachePattern = async (pattern: string): Promise<void> => {
+  try {
+    const client = getRedisClient();
+    const keys = await client.keys(pattern);
+    if (keys.length > 0) {
+      await client.del(keys);
+    }
+  } catch (error) {
+    console.error('Redis deleteCachePattern error:', error);
+  }
+};
