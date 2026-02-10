@@ -2,6 +2,11 @@ import { GoogleGenerativeAI } from '@google/generative-ai';
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || '');
 
+// Model configuration from environment variables
+const PARSING_MODEL = process.env.PARSING_MODEL || 'gemini-flash-latest';
+const INSIGHTS_MODEL = process.env.INSIGHTS_MODEL || 'gemini-flash-latest';
+const EMBEDDING_MODEL = process.env.EMBEDDING_MODEL || 'embedding-001';
+
 // System prompts
 const PARSING_SYSTEM_PROMPT = `You are an intelligent expense parsing assistant with access to the user's expense history. Your job is to extract structured expense information from natural language input and suggest the MOST SPECIFIC and ACCURATE category.
 
@@ -150,7 +155,7 @@ REMEMBER:
 
 Return JSON array of expenses:`;
 
-    const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
+    const model = genAI.getGenerativeModel({ model: PARSING_MODEL });
     const result = await model.generateContent(userPrompt);
     const responseText = result.response.text();
 
@@ -223,7 +228,7 @@ Return JSON:
   "alternatives": ["Alternative 1", "Alternative 2"]
 }`;
 
-    const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
+    const model = genAI.getGenerativeModel({ model: PARSING_MODEL });
     const result = await model.generateContent(prompt);
     let jsonText = result.response.text().trim();
     
@@ -245,11 +250,14 @@ Return JSON:
 
 /**
  * Generate embedding for text (for RAG)
+ * Uses full 3072-dimensional embeddings from gemini-embedding-001
  */
 export const generateEmbedding = async (text: string): Promise<number[]> => {
   try {
-    const model = genAI.getGenerativeModel({ model: 'text-embedding-004' });
+    const model = genAI.getGenerativeModel({ model: EMBEDDING_MODEL });
     const result = await model.embedContent(text);
+    
+    // Return full 3072-dimensional embedding (Pinecone now supports this)
     return result.embedding.values;
   } catch (error: any) {
     console.error('Embedding generation error:', error);
@@ -289,7 +297,7 @@ Focus on trends, comparisons, and interesting observations.
 Return as JSON array of strings:
 ["Insight 1", "Insight 2", "Insight 3"]`;
 
-    const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
+    const model = genAI.getGenerativeModel({ model: INSIGHTS_MODEL });
     const result = await model.generateContent(prompt);
     let jsonText = result.response.text().trim();
     
