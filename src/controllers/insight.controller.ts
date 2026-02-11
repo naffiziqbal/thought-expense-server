@@ -117,7 +117,11 @@ export const getInsights = asyncHandler(async (req: AuthRequest, res: Response):
 
   // Build where clause
   const where: any = { userId };
-  if (type) {
+
+  // Free tier: monthly insights only
+  if (!req.user!.isPremium) {
+    where.type = type && type === 'monthly' ? 'monthly' : 'monthly';
+  } else if (type) {
     where.type = type;
   }
 

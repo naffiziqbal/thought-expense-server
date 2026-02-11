@@ -55,6 +55,7 @@ export const signup = asyncHandler(async (req: AuthRequest, res: Response, next:
       name: true,
       profilePicture: true,
       currency: true,
+      isPremium: true,
       createdAt: true
     }
   });
@@ -106,6 +107,7 @@ export const login = asyncHandler(async (req: AuthRequest, res: Response, next: 
     ...rest,
     profilePicture,
     profilePictureUrl: profilePicture ? getFullUrl(profilePicture) : null,
+    isPremium: user.isPremium,
   };
 
   res.json({
@@ -126,6 +128,7 @@ export const getMe = asyncHandler(async (req: AuthRequest, res: Response) => {
   const userWithUrl = {
     ...user,
     profilePictureUrl: user.profilePicture ? getFullUrl(user.profilePicture) : null,
+    isPremium: user.isPremium ?? false,
   };
   res.json({
     success: true,
@@ -170,6 +173,7 @@ export const updateProfile = asyncHandler(async (req: AuthRequest, res: Response
       name: true,
       profilePicture: true,
       currency: true,
+      isPremium: true,
       createdAt: true
     }
   });
@@ -223,6 +227,7 @@ export const uploadProfilePicture = asyncHandler(async (req: AuthRequest, res: R
       name: true,
       profilePicture: true,
       currency: true,
+      isPremium: true,
       createdAt: true
     }
   });

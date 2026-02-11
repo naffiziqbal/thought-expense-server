@@ -91,13 +91,23 @@ export const getExpenses = asyncHandler(async (req: AuthRequest, res: Response):
 
   // Build where clause
   const where: any = { userId };
-  
-  if (startDate || endDate) {
+
+  // Free tier: limit to past 3 months; Premium: no date limit unless filtered
+  if (!req.user!.isPremium) {
+    const threeMonthsAgo = new Date();
+    threeMonthsAgo.setMonth(threeMonthsAgo.getMonth() - 3);
+    where.date = {
+      gte: startDate
+        ? new Date(Math.max(new Date(startDate as string).getTime(), threeMonthsAgo.getTime()))
+        : threeMonthsAgo,
+      ...(endDate && { lte: new Date(endDate as string) }),
+    };
+  } else if (startDate || endDate) {
     where.date = {};
     if (startDate) where.date.gte = new Date(startDate as string);
     if (endDate) where.date.lte = new Date(endDate as string);
   }
-  
+
   if (category) {
     where.category = category;
   }
@@ -298,7 +308,18 @@ export const getCategorySummary = asyncHandler(async (req: AuthRequest, res: Res
 
   // Build where clause
   const where: any = { userId };
-  if (startDate || endDate) {
+
+  // Free tier: limit to past 3 months
+  if (!req.user!.isPremium) {
+    const threeMonthsAgo = new Date();
+    threeMonthsAgo.setMonth(threeMonthsAgo.getMonth() - 3);
+    where.date = { gte: threeMonthsAgo };
+    if (startDate) {
+      const from = new Date(startDate as string);
+      where.date.gte = from > threeMonthsAgo ? from : threeMonthsAgo;
+    }
+    if (endDate) where.date.lte = new Date(endDate as string);
+  } else if (startDate || endDate) {
     where.date = {};
     if (startDate) where.date.gte = new Date(startDate as string);
     if (endDate) where.date.lte = new Date(endDate as string);
@@ -397,6 +418,57 @@ export const getSimilarExpenses = asyncHandler(async (req: AuthRequest, res: Res
       similar: filtered
     }
   });
+});
+
+// @desc    Export expenses as CSV or PDF (Premium only)
+// @route   GET /api/expenses/export
+// @access  Private (Premium)
+export const exportExpenses = asyncHandler(async (req: AuthRequest, res: Response, next: NextFunction) => {
+  const userId = req.user!.id;
+
+  if (!req.user!.isPremium) {
+    return next(new AppError('Export is available for Premium users only', 403));
+  }
+
+  const { format, from, to } = req.query;
+  if (!format || (format !== 'csv' && format !== 'pdf')) {
+    return next(new AppError('Format must be csv or pdf', 400));
+  }
+
+  const startDate = from ? new Date(from as string) : new Date(0);
+  const endDate = to ? new Date(to as string) : new Date();
+
+  const expenses = await prisma.expense.findMany({
+    where: {
+      userId,
+      date: { gte: startDate, lte: endDate },
+    },
+    orderBy: { date: 'desc' },
+  });
+
+  const dateStr = new Date().toISOString().slice(0, 10);
+
+  if (format === 'csv') {
+    const header = 'Date,Description,Category,Amount,Currency\n';
+    const rows = expenses
+      .map(
+        (e) =>
+          `${e.date.toISOString().slice(0, 10)},"${(e.description || '').replace(/"/g, '""')}",${e.category},${e.amount},${e.currency}`
+      )
+      .join('\n');
+    const csv = header + rows;
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', `attachment; filename="expenses-${dateStr}.csv"`);
+    res.send(csv);
+    return;
+  }
+
+  // PDF - simple text-based using built-in
+  const { createPdf } = await import('../utils/pdfExport');
+  const pdfBuffer = await createPdf(expenses, req.user!.currency, dateStr);
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', `attachment; filename="expenses-${dateStr}.pdf"`);
+  res.send(pdfBuffer);
 });
 
 // @desc    Suggest category for description (RAG + AI)

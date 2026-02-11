@@ -14,6 +14,7 @@ export interface AuthRequest extends Request {
     name: string | null;
     profilePicture: string | null;
     currency: string;
+    isPremium: boolean;
     createdAt: Date;
   };
 }
@@ -44,6 +45,7 @@ export const protect = async (req: AuthRequest, res: Response, next: NextFunctio
           name: true,
           profilePicture: true,
           currency: true,
+          isPremium: true,
           createdAt: true
         }
       });

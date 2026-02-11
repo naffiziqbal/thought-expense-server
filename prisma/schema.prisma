@@ -10,14 +10,16 @@ datasource db {
 }
 
 model User {
-  id             String   @id @default(uuid())
-  email          String   @unique
+  id             String    @id @default(uuid())
+  email          String    @unique
   password       String
   name           String?
-  profilePicture String?  // Stored as /projectName/imageurl.type (CDN base in env)
-  currency       String   @default("USD")
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  profilePicture String?   // Stored as /projectName/imageurl.type (CDN base in env)
+  currency       String    @default("USD")
+  isPremium      Boolean   @default(false)
+  premiumSince   DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
 
   expenses         Expense[]
   insights         Insight[]
