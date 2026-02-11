@@ -102,24 +102,32 @@ export const getExpenses = asyncHandler(async (req: AuthRequest, res: Response):
     where.category = category;
   }
 
+  const limitNum = parseInt(limit as string) || 10;
+  const offsetNum = parseInt(offset as string) || 0;
+
   // Get expenses
   const [expenses, total] = await Promise.all([
     prisma.expense.findMany({
       where,
       orderBy: { date: 'desc' },
-      take: parseInt(limit as string),
-      skip: parseInt(offset as string)
+      take: limitNum,
+      skip: offsetNum
     }),
     prisma.expense.count({ where })
   ]);
+
+  const page = Math.floor(offsetNum / limitNum) + 1;
+  const totalPages = Math.max(1, Math.ceil(total / limitNum));
 
   const result = {
     expenses,
     pagination: {
       total,
-      limit: parseInt(limit as string),
-      offset: parseInt(offset as string),
-      hasMore: total > parseInt(offset as string) + parseInt(limit as string)
+      limit: limitNum,
+      offset: offsetNum,
+      page,
+      totalPages,
+      hasMore: offsetNum + expenses.length < total
     }
   };
 
