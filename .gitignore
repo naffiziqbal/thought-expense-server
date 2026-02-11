@@ -28,5 +28,8 @@ prisma/migrations/
 dist/
 build/
 
+# Local uploads (when Spaces not configured)
+uploads/
+
 # TypeScript
 *.tsbuildinfo

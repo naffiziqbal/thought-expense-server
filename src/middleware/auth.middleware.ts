@@ -12,6 +12,7 @@ export interface AuthRequest extends Request {
     id: string;
     email: string;
     name: string | null;
+    profilePicture: string | null;
     currency: string;
     createdAt: Date;
   };
@@ -41,6 +42,7 @@ export const protect = async (req: AuthRequest, res: Response, next: NextFunctio
           id: true,
           email: true,
           name: true,
+          profilePicture: true,
           currency: true,
           createdAt: true
         }

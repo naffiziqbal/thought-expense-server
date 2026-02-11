@@ -49,6 +49,16 @@ export const errorHandler = (err: any, req: Request, res: Response, next: NextFu
     error.statusCode = 400;
   }
 
+  // Multer errors (file upload)
+  if (err.code === 'LIMIT_FILE_SIZE') {
+    error.message = 'File too large. Maximum size is 2MB.';
+    error.statusCode = 400;
+  }
+  if (err.code === 'LIMIT_UNEXPECTED_FILE') {
+    error.message = 'Unexpected file field. Use "image" for the file input.';
+    error.statusCode = 400;
+  }
+
   res.status(error.statusCode || 500).json({
     success: false,
     message: error.message || 'Internal Server Error',

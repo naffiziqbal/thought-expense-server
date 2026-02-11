@@ -1,6 +1,13 @@
 import express, { Router } from 'express';
 import { body } from 'express-validator';
-import { signup, login, getMe } from '../controllers/auth.controller';
+import {
+  signup,
+  login,
+  getMe,
+  updateProfile,
+  uploadProfilePicture,
+  avatarUpload,
+} from '../controllers/auth.controller';
 import { protect } from '../middleware/auth.middleware';
 import { validate } from '../middleware/validation.middleware';
 
@@ -19,9 +26,15 @@ const loginValidation = [
   body('password').notEmpty().withMessage('Password is required')
 ];
 
+const updateProfileValidation = [
+  body('name').optional().trim().isLength({ min: 1, max: 100 }).withMessage('Name must be 1-100 characters'),
+];
+
 // Routes
 router.post('/signup', signupValidation, validate, signup);
 router.post('/login', loginValidation, validate, login);
 router.get('/me', protect, getMe);
+router.patch('/profile', protect, updateProfileValidation, validate, updateProfile);
+router.post('/profile/picture', protect, avatarUpload.single('image'), uploadProfilePicture);
 
 export default router;

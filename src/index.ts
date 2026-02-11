@@ -1,4 +1,5 @@
 import "dotenv/config";
+import path from "path";
 import express, { Request, Response } from "express";
 import cors from "cors";
 import helmet from "helmet";
@@ -48,6 +49,9 @@ if (process.env.NODE_ENV === "development") {
 } else {
   app.use(morgan("combined"));
 }
+
+// Serve uploaded files (local storage fallback when Spaces not configured)
+app.use("/uploads", express.static(path.join(process.cwd(), "uploads")));
 
 // Health check
 app.get("/health", (_req: Request, res: Response) => {
