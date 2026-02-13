@@ -2,6 +2,7 @@ import express, { Router } from 'express';
 import { body, query, param } from 'express-validator';
 import {
   parseAndCreateExpenses,
+  createExpense,
   getExpenses,
   getExpenseById,
   updateExpense,
@@ -27,7 +28,17 @@ const parseExpensesValidation = [
     .isString()
     .withMessage('Raw input must be a string')
     .isLength({ max: 5000 })
-    .withMessage('Input too long (max 5000 characters)')
+    .withMessage('Input too long (max 5000 characters)'),
+  body('create').optional().isBoolean()
+];
+
+const createExpenseValidation = [
+  body('description').notEmpty().trim().withMessage('Description is required'),
+  body('amount').isFloat({ min: 0 }).withMessage('Amount must be positive'),
+  body('currency').optional().isLength({ min: 3, max: 3 }),
+  body('category').optional().trim(),
+  body('date').optional().isISO8601(),
+  body('rawInput').optional().isString()
 ];
 
 const updateExpenseValidation = [
@@ -48,6 +59,7 @@ const queryExpensesValidation = [
 
 // Routes
 router.post('/parse', parseExpensesValidation, validate, parseAndCreateExpenses);
+router.post('/', createExpenseValidation, validate, createExpense);
 router.get('/', queryExpensesValidation, validate, getExpenses);
 router.get('/summary', getCategorySummary);
 router.get('/suggest-category', query('description').notEmpty().isString(), validate, suggestCategoryForDescription);

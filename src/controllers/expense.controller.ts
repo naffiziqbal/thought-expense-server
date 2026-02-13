@@ -8,11 +8,11 @@ import { convertAmountsToCurrency } from '../services/exchangeRate.service';
 import { setCache, getCache, deleteCache, deleteCachePattern } from '../config/redis';
 import { AuthRequest } from '../middleware/auth.middleware';
 
-// @desc    Parse raw text and create expenses
+// @desc    Parse raw text (optionally create)
 // @route   POST /api/expenses/parse
 // @access  Private
 export const parseAndCreateExpenses = asyncHandler(async (req: AuthRequest, res: Response, next: NextFunction) => {
-  const { rawInput } = req.body;
+  const { rawInput, create = true } = req.body;
   const userId = req.user!.id;
 
   // Get user context for better classification
@@ -23,6 +23,16 @@ export const parseAndCreateExpenses = asyncHandler(async (req: AuthRequest, res:
 
   if (!parsedExpenses || parsedExpenses.length === 0) {
     return next(new AppError('Could not parse any expenses from input', 400));
+  }
+
+  // Parse-only: return without creating
+  if (create === false) {
+    res.json({
+      success: true,
+      message: `Parsed ${parsedExpenses.length} expense(s)`,
+      data: { expenses: parsedExpenses }
+    });
+    return;
   }
 
   // Create expenses in database
@@ -69,6 +79,46 @@ export const parseAndCreateExpenses = asyncHandler(async (req: AuthRequest, res:
       expenses: convertedExpenses,
       needsReview: needsReview.length > 0 ? needsReview.map(e => e.id) : []
     }
+  });
+});
+
+// @desc    Create a single expense
+// @route   POST /api/expenses
+// @access  Private
+export const createExpense = asyncHandler(async (req: AuthRequest, res: Response, next: NextFunction) => {
+  const userId = req.user!.id;
+  const { description, amount, currency, category, date, rawInput } = req.body;
+
+  if (!description || amount == null) {
+    return next(new AppError('Description and amount are required', 400));
+  }
+
+  const expense = await prisma.expense.create({
+    data: {
+      userId,
+      description: String(description).trim(),
+      amount: parseFloat(amount),
+      currency: (currency || req.user!.currency || 'USD').toUpperCase(),
+      category: (category || 'Other').trim(),
+      confidence: 1.0,
+      rawInput: rawInput || `${description} ${amount}`,
+      date: date ? new Date(date) : new Date()
+    }
+  });
+
+  storeExpenseEmbedding(expense).catch(err => {
+    console.error('Failed to store embedding:', err);
+  });
+
+  await deleteCachePattern(`expenses:${userId}:*`);
+  await deleteCachePattern(`summary:${userId}:*`);
+
+  const [converted] = await convertAmountsToCurrency([expense], req.user!.currency || 'USD');
+
+  res.status(201).json({
+    success: true,
+    message: 'Expense created',
+    data: { expense: converted }
   });
 });
 
