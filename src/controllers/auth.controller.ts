@@ -337,3 +337,46 @@ export const resetPassword = asyncHandler(async (req: AuthRequest, res: Response
     message: 'Password reset successfully. You can now log in with your new password.',
   });
 });
+
+// @desc    Change password (authenticated user)
+// @route   POST /api/auth/change-password
+// @access  Private
+export const changePassword = asyncHandler(async (req: AuthRequest, res: Response, next: NextFunction) => {
+  const userId = req.user!.id;
+  const { currentPassword, newPassword } = req.body;
+
+  if (!currentPassword || !newPassword) {
+    return next(new AppError('Current password and new password are required', 400));
+  }
+
+  if (newPassword.length < 6) {
+    return next(new AppError('New password must be at least 6 characters', 400));
+  }
+
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { password: true }
+  });
+
+  if (!user) {
+    return next(new AppError('User not found', 404));
+  }
+
+  const isCurrentValid = await bcrypt.compare(currentPassword, user.password);
+  if (!isCurrentValid) {
+    return next(new AppError('Current password is incorrect', 400));
+  }
+
+  const salt = await bcrypt.genSalt(12);
+  const hashedPassword = await bcrypt.hash(newPassword, salt);
+
+  await prisma.user.update({
+    where: { id: userId },
+    data: { password: hashedPassword }
+  });
+
+  res.json({
+    success: true,
+    message: 'Password updated successfully.',
+  });
+});

@@ -10,6 +10,7 @@ import {
   avatarUpload,
   forgotPassword,
   resetPassword,
+  changePassword,
 } from '../controllers/auth.controller';
 import { protect } from '../middleware/auth.middleware';
 import { validate } from '../middleware/validation.middleware';
@@ -43,6 +44,11 @@ const resetPasswordValidation = [
   body('password').isLength({ min: 6 }).withMessage('Password must be at least 6 characters'),
 ];
 
+const changePasswordValidation = [
+  body('currentPassword').notEmpty().withMessage('Current password is required'),
+  body('newPassword').isLength({ min: 6 }).withMessage('New password must be at least 6 characters'),
+];
+
 // Stricter rate limit for forgot-password to prevent email abuse
 const forgotPasswordLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
@@ -58,5 +64,6 @@ router.patch('/profile', protect, updateProfileValidation, validate, updateProfi
 router.post('/profile/picture', protect, avatarUpload.single('image'), uploadProfilePicture);
 router.post('/forgot-password', forgotPasswordLimiter, forgotPasswordValidation, validate, forgotPassword);
 router.post('/reset-password', resetPasswordValidation, validate, resetPassword);
+router.post('/change-password', protect, changePasswordValidation, validate, changePassword);
 
 export default router;
