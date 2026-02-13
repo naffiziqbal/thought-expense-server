@@ -1,4 +1,5 @@
 import express, { Router } from 'express';
+import rateLimit from 'express-rate-limit';
 import { body } from 'express-validator';
 import {
   signup,
@@ -7,6 +8,8 @@ import {
   updateProfile,
   uploadProfilePicture,
   avatarUpload,
+  forgotPassword,
+  resetPassword,
 } from '../controllers/auth.controller';
 import { protect } from '../middleware/auth.middleware';
 import { validate } from '../middleware/validation.middleware';
@@ -31,11 +34,29 @@ const updateProfileValidation = [
   body('currency').optional().isLength({ min: 3, max: 3 }).withMessage('Currency must be a 3-letter code'),
 ];
 
+const forgotPasswordValidation = [
+  body('email').isEmail().normalizeEmail().withMessage('Please provide a valid email'),
+];
+
+const resetPasswordValidation = [
+  body('token').notEmpty().withMessage('Reset token is required'),
+  body('password').isLength({ min: 6 }).withMessage('Password must be at least 6 characters'),
+];
+
+// Stricter rate limit for forgot-password to prevent email abuse
+const forgotPasswordLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 5,
+  message: 'Too many reset requests. Please try again later.',
+});
+
 // Routes
 router.post('/signup', signupValidation, validate, signup);
 router.post('/login', loginValidation, validate, login);
 router.get('/me', protect, getMe);
 router.patch('/profile', protect, updateProfileValidation, validate, updateProfile);
 router.post('/profile/picture', protect, avatarUpload.single('image'), uploadProfilePicture);
+router.post('/forgot-password', forgotPasswordLimiter, forgotPasswordValidation, validate, forgotPassword);
+router.post('/reset-password', resetPasswordValidation, validate, resetPassword);
 
 export default router;
