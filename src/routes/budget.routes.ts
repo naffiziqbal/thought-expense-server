@@ -1,6 +1,6 @@
 import express, { Router } from 'express';
-import { body } from 'express-validator';
-import { upsertBudget, getCurrentBudget } from '../controllers/budget.controller';
+import { body, param, query } from 'express-validator';
+import { upsertBudget, getCurrentBudget, getBudgetHistory, deleteBudget } from '../controllers/budget.controller';
 import { protect } from '../middleware/auth.middleware';
 import { validate } from '../middleware/validation.middleware';
 
@@ -16,6 +16,13 @@ const upsertBudgetValidation = [
 
 router.post('/', upsertBudgetValidation, validate, upsertBudget);
 router.get('/current', getCurrentBudget);
+router.get(
+  '/history',
+  query('limit').optional().isInt({ min: 1, max: 24 }).withMessage('limit must be between 1 and 24'),
+  validate,
+  getBudgetHistory
+);
+router.delete('/:id', param('id').isUUID(), validate, deleteBudget);
 
 export default router;
 
