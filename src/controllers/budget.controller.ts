@@ -54,16 +54,19 @@ export const upsertBudget = asyncHandler(async (req: AuthRequest, res: Response)
   });
 });
 
-// @desc    Get current monthly budget with progress
+// @desc    Get monthly budget with progress (current month or specified month/year via query)
 // @route   GET /api/budgets/current
 // @access  Private
 export const getCurrentBudget = asyncHandler(async (req: AuthRequest, res: Response) => {
   const userId = req.user!.id;
   const userCurrency = req.user!.currency || 'USD';
 
+  const monthParam = req.query.month as string | undefined;
+  const yearParam = req.query.year as string | undefined;
+
   const now = new Date();
-  const month = now.getMonth() + 1; // JS months are 0-based
-  const year = now.getFullYear();
+  const month = monthParam ? parseInt(monthParam, 10) : now.getMonth() + 1;
+  const year = yearParam ? parseInt(yearParam, 10) : now.getFullYear();
 
   const budget = await (prisma as any).budget.findUnique({
     where: {
@@ -279,14 +282,17 @@ export const upsertCategoryBudgets = asyncHandler(async (req: AuthRequest, res: 
   res.json({ success: true, message: 'Category budgets saved' });
 });
 
-// Get current month category budgets with progress
+// Get category budgets with progress (current month or specified month/year via query)
 export const getCurrentCategoryBudgets = asyncHandler(async (req: AuthRequest, res: Response) => {
   const userId = req.user!.id;
   const userCurrency = req.user!.currency || 'USD';
 
+  const monthParam = req.query.month as string | undefined;
+  const yearParam = req.query.year as string | undefined;
+
   const now = new Date();
-  const month = now.getMonth() + 1;
-  const year = now.getFullYear();
+  const month = monthParam ? parseInt(monthParam, 10) : now.getMonth() + 1;
+  const year = yearParam ? parseInt(yearParam, 10) : now.getFullYear();
 
   const budgets = await (prisma as any).categoryBudget.findMany({
     where: { userId, month, year },

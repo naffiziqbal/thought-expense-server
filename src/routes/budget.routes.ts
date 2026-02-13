@@ -23,7 +23,13 @@ const upsertBudgetValidation = [
 ];
 
 router.post('/', upsertBudgetValidation, validate, upsertBudget);
-router.get('/current', getCurrentBudget);
+router.get(
+  '/current',
+  query('month').optional().isInt({ min: 1, max: 12 }),
+  query('year').optional().isInt({ min: 2000, max: 2100 }),
+  validate,
+  getCurrentBudget
+);
 router.get(
   '/history',
   query('limit').optional().isInt({ min: 1, max: 24 }).withMessage('limit must be between 1 and 24'),
@@ -49,7 +55,13 @@ router.post(
   upsertCategoryBudgets
 );
 
-router.get('/categories/current', getCurrentCategoryBudgets);
+router.get(
+  '/categories/current',
+  query('month').optional().isInt({ min: 1, max: 12 }),
+  query('year').optional().isInt({ min: 2000, max: 2100 }),
+  validate,
+  getCurrentCategoryBudgets
+);
 
 export default router;
 
