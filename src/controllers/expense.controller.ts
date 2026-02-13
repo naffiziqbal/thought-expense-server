@@ -474,6 +474,7 @@ export const exportExpenses = asyncHandler(async (req: AuthRequest, res: Respons
   const dateStr = new Date().toISOString().slice(0, 10);
 
   if (format === 'csv') {
+    const totalAmount = convertedExpenses.reduce((sum, e) => sum + e.amount, 0);
     const header = 'Date,Description,Category,Amount,Currency\n';
     const rows = convertedExpenses
       .map(
@@ -481,7 +482,8 @@ export const exportExpenses = asyncHandler(async (req: AuthRequest, res: Respons
           `${e.date.toISOString().slice(0, 10)},"${(e.description || '').replace(/"/g, '""')}",${e.category},${e.amount},${e.currency}`
       )
       .join('\n');
-    const csv = header + rows;
+    const totalRow = `\n"Total Expense","","",${totalAmount.toFixed(2)},${userCurrency}`;
+    const csv = header + rows + totalRow;
     res.setHeader('Content-Type', 'text/csv');
     res.setHeader('Content-Disposition', `attachment; filename="expenses-${dateStr}.csv"`);
     res.send(csv);
