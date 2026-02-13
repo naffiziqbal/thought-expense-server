@@ -5,6 +5,48 @@ const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || '');
 // Model configuration from environment variables
 const PARSING_MODEL = process.env.PARSING_MODEL || 'gemini-flash-latest';
 const INSIGHTS_MODEL = process.env.INSIGHTS_MODEL || 'gemini-flash-latest';
+
+// Fallback models when primary returns 503 / high demand
+const PARSING_FALLBACK_MODELS = ['gemini-2.0-flash', 'gemini-1.5-flash', 'gemini-1.5-pro'];
+
+function isRetryableError(error: unknown): boolean {
+  const msg = error instanceof Error ? error.message : String(error);
+  return (
+    /503|429|500|502|504/.test(msg) ||
+    /Service Unavailable|high demand|overloaded|rate limit|temporarily/i.test(msg)
+  );
+}
+
+async function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function generateWithRetryAndFallback<T>(
+  models: string[],
+  fn: (model: string) => Promise<T>
+): Promise<T> {
+  const maxRetries = 2;
+  let lastError: unknown;
+
+  for (const model of models) {
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      try {
+        return await fn(model);
+      } catch (err) {
+        lastError = err;
+        if (!isRetryableError(err) || attempt === maxRetries) break;
+        const delay = (attempt + 1) * 1500;
+        console.warn(`Gemini ${model} attempt ${attempt + 1} failed, retrying in ${delay}ms...`, err);
+        await sleep(delay);
+      }
+    }
+    if (models.indexOf(model) < models.length - 1) {
+      console.warn(`Switching to fallback model after ${model} failed`);
+    }
+  }
+
+  throw lastError;
+}
 const EMBEDDING_MODEL = process.env.EMBEDDING_MODEL || 'embedding-001';
 
 // System prompts
@@ -155,9 +197,13 @@ REMEMBER:
 
 Return JSON array of expenses:`;
 
-    const model = genAI.getGenerativeModel({ model: PARSING_MODEL });
-    const result = await model.generateContent(userPrompt);
-    const responseText = result.response.text();
+    const modelsToTry = [PARSING_MODEL, ...PARSING_FALLBACK_MODELS.filter((m) => m !== PARSING_MODEL)];
+
+    const responseText = await generateWithRetryAndFallback(modelsToTry, async (modelName) => {
+      const model = genAI.getGenerativeModel({ model: modelName });
+      const result = await model.generateContent(userPrompt);
+      return result.response.text();
+    });
 
     // Extract JSON from response
     let jsonText = responseText.trim();
@@ -189,6 +235,11 @@ Return JSON array of expenses:`;
 
   } catch (error: any) {
     console.error('Gemini parsing error:', error);
+    if (isRetryableError(error)) {
+      throw new Error(
+        'Our AI service is temporarily busy. Please try again in a moment.'
+      );
+    }
     throw new Error(`Failed to parse expenses: ${error.message}`);
   }
 };
@@ -228,9 +279,14 @@ Return JSON:
   "alternatives": ["Alternative 1", "Alternative 2"]
 }`;
 
-    const model = genAI.getGenerativeModel({ model: PARSING_MODEL });
-    const result = await model.generateContent(prompt);
-    let jsonText = result.response.text().trim();
+    const modelsToTry = [PARSING_MODEL, ...PARSING_FALLBACK_MODELS.filter((m) => m !== PARSING_MODEL)];
+
+    const rawText = await generateWithRetryAndFallback(modelsToTry, async (modelName) => {
+      const model = genAI.getGenerativeModel({ model: modelName });
+      const result = await model.generateContent(prompt);
+      return result.response.text();
+    });
+    let jsonText = rawText.trim();
     
     // Remove markdown
     jsonText = jsonText.replace(/```json\n?/g, '').replace(/```\n?/g, '');
@@ -297,9 +353,15 @@ Focus on trends, comparisons, and interesting observations.
 Return as JSON array of strings:
 ["Insight 1", "Insight 2", "Insight 3"]`;
 
-    const model = genAI.getGenerativeModel({ model: INSIGHTS_MODEL });
-    const result = await model.generateContent(prompt);
-    let jsonText = result.response.text().trim();
+    const insightFallbacks = ['gemini-2.0-flash', 'gemini-1.5-flash', 'gemini-1.5-pro'];
+    const modelsToTry = [INSIGHTS_MODEL, ...insightFallbacks.filter((m) => m !== INSIGHTS_MODEL)];
+
+    const rawText = await generateWithRetryAndFallback(modelsToTry, async (modelName) => {
+      const model = genAI.getGenerativeModel({ model: modelName });
+      const result = await model.generateContent(prompt);
+      return result.response.text();
+    });
+    let jsonText = rawText.trim();
     
     // Remove markdown
     jsonText = jsonText.replace(/```json\n?/g, '').replace(/```\n?/g, '');
