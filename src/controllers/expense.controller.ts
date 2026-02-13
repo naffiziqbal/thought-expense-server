@@ -4,6 +4,7 @@ import { asyncHandler } from '../middleware/error.middleware';
 import { AppError } from '../middleware/error.middleware';
 import { parseExpenses, suggestCategory } from '../services/gemini.service';
 import { getUserContext, storeExpenseEmbedding, updateCategoryMapping, findSimilarExpenses, deleteExpenseEmbedding } from '../services/rag.service';
+import { convertAmountsToCurrency } from '../services/exchangeRate.service';
 import { setCache, getCache, deleteCache, deleteCachePattern } from '../config/redis';
 import { AuthRequest } from '../middleware/auth.middleware';
 
@@ -51,7 +52,10 @@ export const parseAndCreateExpenses = asyncHandler(async (req: AuthRequest, res:
 
   // Invalidate cache
   await deleteCachePattern(`expenses:${userId}:*`);
-  await deleteCache(`summary:${userId}`);
+  await deleteCachePattern(`summary:${userId}:*`);
+
+  // Convert to user's currency for response
+  const convertedExpenses = await convertAmountsToCurrency(createdExpenses, req.user!.currency || 'USD');
 
   // Flag low-confidence expenses
   const needsReview = createdExpenses.filter(
@@ -62,7 +66,7 @@ export const parseAndCreateExpenses = asyncHandler(async (req: AuthRequest, res:
     success: true,
     message: `Successfully parsed ${createdExpenses.length} expense(s)`,
     data: {
-      expenses: createdExpenses,
+      expenses: convertedExpenses,
       needsReview: needsReview.length > 0 ? needsReview.map(e => e.id) : []
     }
   });
@@ -73,10 +77,11 @@ export const parseAndCreateExpenses = asyncHandler(async (req: AuthRequest, res:
 // @access  Private
 export const getExpenses = asyncHandler(async (req: AuthRequest, res: Response): Promise<void> => {
   const userId = req.user!.id;
+  const userCurrency = req.user!.currency || 'USD';
   const { startDate, endDate, category, limit = '50', offset = '0' } = req.query;
 
-  // Build cache key
-  const cacheKey = `expenses:${userId}:${startDate || 'all'}:${endDate || 'all'}:${category || 'all'}:${limit}:${offset}`;
+  // Build cache key (include user currency - converted data differs per currency)
+  const cacheKey = `expenses:${userId}:${userCurrency}:${startDate || 'all'}:${endDate || 'all'}:${category || 'all'}:${limit}:${offset}`;
   
   // Check cache
   const cached = await getCache(cacheKey);
@@ -129,8 +134,11 @@ export const getExpenses = asyncHandler(async (req: AuthRequest, res: Response):
   const page = Math.floor(offsetNum / limitNum) + 1;
   const totalPages = Math.max(1, Math.ceil(total / limitNum));
 
+  // Convert amounts to user's currency
+  const convertedExpenses = await convertAmountsToCurrency(expenses, userCurrency);
+
   const result = {
-    expenses,
+    expenses: convertedExpenses,
     pagination: {
       total,
       limit: limitNum,
@@ -165,9 +173,12 @@ export const getExpenseById = asyncHandler(async (req: AuthRequest, res: Respons
     return next(new AppError('Expense not found', 404));
   }
 
+  // Convert to user's currency
+  const [converted] = await convertAmountsToCurrency([expense], req.user!.currency || 'USD');
+
   res.json({
     success: true,
-    data: { expense }
+    data: { expense: converted }
   });
 });
 
@@ -240,12 +251,15 @@ export const updateExpense = asyncHandler(async (req: AuthRequest, res: Response
 
   // Invalidate cache
   await deleteCachePattern(`expenses:${userId}:*`);
-  await deleteCache(`summary:${userId}`);
+  await deleteCachePattern(`summary:${userId}:*`);
+
+  // Convert to user's currency for response
+  const [converted] = await convertAmountsToCurrency([updated], req.user!.currency || 'USD');
 
   res.json({
     success: true,
     message: 'Expense updated successfully',
-    data: { expense: updated }
+    data: { expense: converted }
   });
 });
 
@@ -277,7 +291,7 @@ export const deleteExpense = asyncHandler(async (req: AuthRequest, res: Response
 
   // Invalidate cache
   await deleteCachePattern(`expenses:${userId}:*`);
-  await deleteCache(`summary:${userId}`);
+  await deleteCachePattern(`summary:${userId}:*`);
 
   res.json({
     success: true,
@@ -290,10 +304,11 @@ export const deleteExpense = asyncHandler(async (req: AuthRequest, res: Response
 // @access  Private
 export const getCategorySummary = asyncHandler(async (req: AuthRequest, res: Response): Promise<void> => {
   const userId = req.user!.id;
+  const userCurrency = req.user!.currency || 'USD';
   const { startDate, endDate } = req.query;
 
-  // Build cache key
-  const cacheKey = `summary:${userId}:${startDate || 'all'}:${endDate || 'all'}`;
+  // Build cache key (include user currency)
+  const cacheKey = `summary:${userId}:${userCurrency}:${startDate || 'all'}:${endDate || 'all'}`;
   
   // Check cache
   const cached = await getCache(cacheKey);
@@ -340,7 +355,7 @@ export const getCategorySummary = asyncHandler(async (req: AuthRequest, res: Res
       success: true,
       data: {
         totalSpent: 0,
-        currency: req.user!.currency,
+        currency: userCurrency,
         byCategory: {},
         percentages: {},
         topCategories: [],
@@ -350,11 +365,14 @@ export const getCategorySummary = asyncHandler(async (req: AuthRequest, res: Res
     return;
   }
 
-  // Calculate totals by category
+  // Convert all amounts to user's currency before summing
+  const converted = await convertAmountsToCurrency(expenses, userCurrency);
+
+  // Calculate totals by category (in user's currency)
   const byCategory: Record<string, number> = {};
   let totalSpent = 0;
 
-  expenses.forEach(expense => {
+  converted.forEach(expense => {
     const amount = expense.amount;
     totalSpent += amount;
     byCategory[expense.category] = (byCategory[expense.category] || 0) + amount;
@@ -374,7 +392,7 @@ export const getCategorySummary = asyncHandler(async (req: AuthRequest, res: Res
 
   const summary = {
     totalSpent: parseFloat(totalSpent.toFixed(2)),
-    currency: req.user!.currency,
+    currency: userCurrency,
     byCategory,
     percentages,
     topCategories,
@@ -412,10 +430,13 @@ export const getSimilarExpenses = asyncHandler(async (req: AuthRequest, res: Res
   // Filter out the expense itself
   const filtered = similar.filter(e => e.id !== id);
 
+  // Convert to user's currency
+  const converted = await convertAmountsToCurrency(filtered, req.user!.currency || 'USD');
+
   res.json({
     success: true,
     data: {
-      similar: filtered
+      similar: converted
     }
   });
 });
@@ -446,11 +467,15 @@ export const exportExpenses = asyncHandler(async (req: AuthRequest, res: Respons
     orderBy: { date: 'desc' },
   });
 
+  // Convert to user's currency
+  const userCurrency = req.user!.currency || 'USD';
+  const convertedExpenses = await convertAmountsToCurrency(expenses, userCurrency);
+
   const dateStr = new Date().toISOString().slice(0, 10);
 
   if (format === 'csv') {
     const header = 'Date,Description,Category,Amount,Currency\n';
-    const rows = expenses
+    const rows = convertedExpenses
       .map(
         (e) =>
           `${e.date.toISOString().slice(0, 10)},"${(e.description || '').replace(/"/g, '""')}",${e.category},${e.amount},${e.currency}`
@@ -463,9 +488,9 @@ export const exportExpenses = asyncHandler(async (req: AuthRequest, res: Respons
     return;
   }
 
-  // PDF - simple text-based using built-in
+  // PDF - simple text-based using built-in (expenses already converted)
   const { createPdf } = await import('../utils/pdfExport');
-  const pdfBuffer = await createPdf(expenses, req.user!.currency, dateStr);
+  const pdfBuffer = await createPdf(convertedExpenses, userCurrency, dateStr);
   res.setHeader('Content-Type', 'application/pdf');
   res.setHeader('Content-Disposition', `attachment; filename="expenses-${dateStr}.pdf"`);
   res.send(pdfBuffer);

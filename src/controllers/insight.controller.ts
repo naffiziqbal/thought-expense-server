@@ -2,6 +2,7 @@ import { Response } from 'express';
 import prisma from '../config/prisma';
 import { asyncHandler } from '../middleware/error.middleware';
 import { generateInsights } from '../services/gemini.service';
+import { convertAmountsToCurrency } from '../services/exchangeRate.service';
 import { setCache, getCache } from '../config/redis';
 import { AuthRequest } from '../middleware/auth.middleware';
 
@@ -32,11 +33,15 @@ export const generateWeeklyInsights = asyncHandler(async (req: AuthRequest, res:
     return;
   }
 
-  // Calculate summary
+  // Convert to user's currency before calculating summary
+  const userCurrency = req.user!.currency || 'USD';
+  const converted = await convertAmountsToCurrency(expenses, userCurrency);
+
+  // Calculate summary in user's currency
   const byCategory: Record<string, number> = {};
   let totalSpent = 0;
 
-  expenses.forEach(expense => {
+  converted.forEach(expense => {
     totalSpent += expense.amount;
     byCategory[expense.category] = (byCategory[expense.category] || 0) + expense.amount;
   });
@@ -53,14 +58,14 @@ export const generateWeeklyInsights = asyncHandler(async (req: AuthRequest, res:
 
   const summary = {
     totalSpent: parseFloat(totalSpent.toFixed(2)),
-    currency: req.user!.currency,
+    currency: userCurrency,
     byCategory,
     percentages,
     topCategories
   };
 
-  // Generate insights using AI
-  const insightTexts = await generateInsights(expenses, summary);
+  // Generate insights using AI (with converted amounts)
+  const insightTexts = await generateInsights(converted, summary);
 
   // Store insights in database
   const createdInsights = await Promise.all(

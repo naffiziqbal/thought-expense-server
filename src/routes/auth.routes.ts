@@ -28,6 +28,7 @@ const loginValidation = [
 
 const updateProfileValidation = [
   body('name').optional().trim().isLength({ min: 1, max: 100 }).withMessage('Name must be 1-100 characters'),
+  body('currency').optional().isLength({ min: 3, max: 3 }).withMessage('Currency must be a 3-letter code'),
 ];
 
 // Routes

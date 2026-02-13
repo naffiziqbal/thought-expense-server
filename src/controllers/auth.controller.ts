@@ -152,17 +152,20 @@ export const avatarUpload = multer({
   },
 });
 
-// @desc    Update user profile (name)
+// @desc    Update user profile (name, currency)
 // @route   PATCH /api/auth/profile
 // @access  Private
 export const updateProfile = asyncHandler(async (req: AuthRequest, res: Response, next: NextFunction) => {
-  const { name } = req.body;
+  const { name, currency } = req.body;
   const userId = req.user!.id;
 
-  const updateData =
-    name !== undefined
-      ? { name: (typeof name === 'string' && name.trim()) || null }
-      : {};
+  const updateData: { name?: string | null; currency?: string } = {};
+  if (name !== undefined) {
+    updateData.name = (typeof name === 'string' && name.trim()) || null;
+  }
+  if (currency !== undefined && typeof currency === 'string' && currency.length === 3) {
+    updateData.currency = currency.toUpperCase();
+  }
 
   const user = await prisma.user.update({
     where: { id: userId },
