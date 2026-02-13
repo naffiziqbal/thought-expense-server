@@ -4,6 +4,7 @@ import { asyncHandler } from '../middleware/error.middleware';
 import { AppError } from '../middleware/error.middleware';
 import { AuthRequest } from '../middleware/auth.middleware';
 import { convertAmountsToCurrency } from '../services/exchangeRate.service';
+import { parseCategoryBudgets } from '../services/gemini.service';
 
 // @desc    Create or update monthly budget
 // @route   POST /api/budgets
@@ -214,5 +215,137 @@ export const deleteBudget = asyncHandler(async (req: AuthRequest, res: Response)
     success: true,
     message: 'Budget deleted',
   });
+});
+
+// Parse category budgets from free text
+export const parseCategoryBudgetsHandler = asyncHandler(async (req: AuthRequest, res: Response) => {
+  const userId = req.user!.id;
+  const { text } = req.body as { text: string };
+
+  if (!text || !text.trim()) {
+    throw new AppError('text is required', 400);
+  }
+
+  // Get known categories from user's expenses
+  const rows = await prisma.expense.findMany({
+    where: { userId },
+    distinct: ['category'],
+    select: { category: true },
+    take: 50,
+  });
+  const known = rows.map((r) => r.category);
+
+  const parsed = await parseCategoryBudgets(text, known);
+
+  res.json({
+    success: true,
+    data: { items: parsed },
+  });
+});
+
+// Upsert category budgets for a month
+export const upsertCategoryBudgets = asyncHandler(async (req: AuthRequest, res: Response) => {
+  const userId = req.user!.id;
+  const { month, year, items } = req.body as {
+    month: number;
+    year: number;
+    items: { category: string; limit: number }[];
+  };
+
+  if (!month || !year || !Array.isArray(items) || items.length === 0) {
+    throw new AppError('month, year and items are required', 400);
+  }
+
+  for (const item of items) {
+    const category = String(item.category || '').trim();
+    const limit = Number(item.limit);
+
+    if (!category || !limit || limit <= 0) continue;
+
+    await (prisma as any).categoryBudget.upsert({
+      where: {
+        userId_month_year_category: {
+          userId,
+          month,
+          year,
+          category,
+        },
+      },
+      update: { limit },
+      create: { userId, month, year, category, limit },
+    });
+  }
+
+  res.json({ success: true, message: 'Category budgets saved' });
+});
+
+// Get current month category budgets with progress
+export const getCurrentCategoryBudgets = asyncHandler(async (req: AuthRequest, res: Response) => {
+  const userId = req.user!.id;
+  const userCurrency = req.user!.currency || 'USD';
+
+  const now = new Date();
+  const month = now.getMonth() + 1;
+  const year = now.getFullYear();
+
+  const budgets = await (prisma as any).categoryBudget.findMany({
+    where: { userId, month, year },
+  });
+
+  if (budgets.length === 0) {
+    res.json({ success: true, data: [] });
+    return;
+  }
+
+  const monthStart = new Date(year, month - 1, 1);
+  const monthEnd = new Date(year, month, 0, 23, 59, 59, 999);
+
+  const expenses = await prisma.expense.findMany({
+    where: {
+      userId,
+      date: { gte: monthStart, lte: monthEnd },
+    },
+    select: { amount: true, currency: true, category: true },
+  });
+
+  const byCategory = new Map<string, { amount: number; currency: string }[]>();
+  for (const e of expenses) {
+    const key = e.category;
+    if (!byCategory.has(key)) byCategory.set(key, []);
+    byCategory.get(key)!.push({ amount: e.amount, currency: e.currency });
+  }
+
+  const result: {
+    month: number;
+    year: number;
+    category: string;
+    limit: number;
+    spent: number;
+    remaining: number;
+    percentage: number;
+  }[] = [];
+
+  for (const b of budgets) {
+    const rows = byCategory.get(b.category) || [];
+    let spent = 0;
+    if (rows.length > 0) {
+      const converted = await convertAmountsToCurrency(rows, userCurrency);
+      spent = converted.reduce((sum, r) => sum + r.amount, 0);
+    }
+    const remaining = b.limit - spent;
+    const percentage = b.limit > 0 ? Math.round((spent / b.limit) * 100) : 0;
+
+    result.push({
+      month,
+      year,
+      category: b.category,
+      limit: b.limit,
+      spent: parseFloat(spent.toFixed(2)),
+      remaining: parseFloat(remaining.toFixed(2)),
+      percentage,
+    });
+  }
+
+  res.json({ success: true, data: result });
 });
 

@@ -156,6 +156,11 @@ interface ExpenseSummary {
   topCategories: string[];
 }
 
+export interface ParsedCategoryBudget {
+  category: string;
+  limit: number;
+}
+
 /**
  * Parse natural language expenses into structured data using Gemini
  */
@@ -241,6 +246,70 @@ Return JSON array of expenses:`;
       );
     }
     throw new Error(`Failed to parse expenses: ${error.message}`);
+  }
+};
+
+export const parseCategoryBudgets = async (
+  text: string,
+  knownCategories: string[] = []
+): Promise<ParsedCategoryBudget[]> => {
+  try {
+    const categoriesHint = knownCategories.length
+      ? `Known categories: ${knownCategories.join(', ')}`
+      : 'Known categories: Groceries, Health, Medical, Rent, Transport, Entertainment, Utilities, Education, Shopping, Other';
+
+    const prompt = `
+You are a budgeting assistant. Extract category-wise budget limits from the user's text.
+
+${categoriesHint}
+
+Input:
+"""
+${text}
+"""
+
+Return ONLY a JSON array like:
+[
+  { "category": "Groceries", "limit": 4000 },
+  { "category": "Health", "limit": 5000 }
+]
+
+Rules:
+- "category" must be a short, human-readable label (match known categories when possible).
+- "limit" is a number (no currency symbol).
+- Ignore unrelated text.
+`;
+
+    const modelsToTry = [PARSING_MODEL, ...PARSING_FALLBACK_MODELS.filter((m) => m !== PARSING_MODEL)];
+
+    const rawText = await generateWithRetryAndFallback(modelsToTry, async (modelName) => {
+      const model = genAI.getGenerativeModel({ model: modelName });
+      const result = await model.generateContent(prompt);
+      return result.response.text();
+    });
+
+    let jsonText = rawText.trim()
+      .replace(/```json\n?/g, '')
+      .replace(/```\n?/g, '');
+
+    const arrayMatch = jsonText.match(/\[[\s\S]*\]/);
+    if (arrayMatch) jsonText = arrayMatch[0];
+
+    const parsed = JSON.parse(jsonText);
+    const items = Array.isArray(parsed) ? parsed : [parsed];
+
+    return items
+      .map((i: any) => ({
+        category: String(i.category || '').trim(),
+        limit: Number(i.limit),
+      }))
+      .filter((i) => i.category && !isNaN(i.limit) && i.limit > 0);
+  } catch (error: any) {
+    console.error('parseCategoryBudgets error:', error);
+    if (isRetryableError(error)) {
+      throw new Error('Our AI is temporarily busy. Please try again in a moment.');
+    }
+    throw new Error(`Failed to parse category budgets: ${error.message}`);
   }
 };
 

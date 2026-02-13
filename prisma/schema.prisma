@@ -25,6 +25,7 @@ model User {
   insights         Insight[]
   categoryMappings CategoryMapping[]
   budgets          Budget[]
+  categoryBudgets  CategoryBudget[]
 
   @@index([email])
 }
@@ -105,6 +106,22 @@ model Budget {
 
   @@unique([userId, month, year])
   @@index([userId, year, month])
+}
+
+model CategoryBudget {
+  id        String   @id @default(uuid())
+  userId    String
+  month     Int
+  year      Int
+  category  String
+  limit     Float
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, month, year, category])
+  @@index([userId, year, month, category])
 }
 
 // Predefined categories

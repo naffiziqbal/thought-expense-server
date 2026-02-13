@@ -1,6 +1,14 @@
 import express, { Router } from 'express';
 import { body, param, query } from 'express-validator';
-import { upsertBudget, getCurrentBudget, getBudgetHistory, deleteBudget } from '../controllers/budget.controller';
+import {
+  upsertBudget,
+  getCurrentBudget,
+  getBudgetHistory,
+  deleteBudget,
+  parseCategoryBudgetsHandler,
+  upsertCategoryBudgets,
+  getCurrentCategoryBudgets,
+} from '../controllers/budget.controller';
 import { protect } from '../middleware/auth.middleware';
 import { validate } from '../middleware/validation.middleware';
 
@@ -23,6 +31,25 @@ router.get(
   getBudgetHistory
 );
 router.delete('/:id', param('id').isUUID(), validate, deleteBudget);
+
+// Category budgets
+router.post(
+  '/categories/parse',
+  body('text').isString().isLength({ min: 3 }).withMessage('text is required'),
+  validate,
+  parseCategoryBudgetsHandler
+);
+
+router.post(
+  '/categories',
+  body('month').isInt({ min: 1, max: 12 }),
+  body('year').isInt({ min: 2000, max: 2100 }),
+  body('items').isArray({ min: 1 }),
+  validate,
+  upsertCategoryBudgets
+);
+
+router.get('/categories/current', getCurrentCategoryBudgets);
 
 export default router;
 
