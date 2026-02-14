@@ -78,15 +78,6 @@ export const getCurrentBudget = asyncHandler(async (req: AuthRequest, res: Respo
     },
   });
 
-  if (!budget) {
-    res.json({
-      success: true,
-      data: null,
-    });
-    return;
-  }
-
-  // Calculate totalSpent in user's currency
   const monthStart = new Date(year, month - 1, 1);
   const monthEnd = new Date(year, month, 0, 23, 59, 59, 999);
 
@@ -113,14 +104,35 @@ export const getCurrentBudget = asyncHandler(async (req: AuthRequest, res: Respo
     totalSpent = converted.reduce((sum, e) => sum + e.amount, 0);
   }
 
-  const totalLimit = budget.totalLimit;
+  let totalLimit: number;
+  let budgetId: string | undefined;
+
+  if (budget) {
+    totalLimit = budget.totalLimit;
+    budgetId = budget.id;
+  } else {
+    // Fall back to category budgets when no explicit total Budget exists
+    const categoryBudgets = await (prisma as any).categoryBudget.findMany({
+      where: { userId, month, year },
+    });
+    if (categoryBudgets.length === 0) {
+      res.json({
+        success: true,
+        data: null,
+      });
+      return;
+    }
+    totalLimit = categoryBudgets.reduce((sum: number, cb: { limit: number }) => sum + cb.limit, 0);
+    budgetId = `category-derived-${month}-${year}`;
+  }
+
   const remaining = totalLimit - totalSpent;
   const percentage = totalLimit > 0 ? Math.round((totalSpent / totalLimit) * 100) : 0;
 
   res.json({
     success: true,
     data: {
-      id: budget.id,
+      id: budgetId,
       month,
       year,
       total_limit: totalLimit,
