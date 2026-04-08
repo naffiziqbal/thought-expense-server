@@ -7,6 +7,8 @@ import { getUserContext, storeExpenseEmbedding, updateCategoryMapping, findSimil
 import { convertAmountsToCurrency } from '../services/exchangeRate.service';
 import { setCache, getCache, deleteCache, deleteCachePattern } from '../config/redis';
 import { AuthRequest } from '../middleware/auth.middleware';
+import { expenseParseQueue } from '../queues/expenseParse.queue';
+import { persistParsedExpenses } from '../services/expenseParse.service';
 
 // @desc    Parse raw text (optionally create)
 // @route   POST /api/expenses/parse
@@ -35,50 +37,87 @@ export const parseAndCreateExpenses = asyncHandler(async (req: AuthRequest, res:
     return;
   }
 
-  // Create expenses in database
-  const createdExpenses = await Promise.all(
-    parsedExpenses.map(async (expense) => {
-      const created = await prisma.expense.create({
-        data: {
-          userId,
-          description: expense.description,
-          amount: expense.amount,
-          currency: expense.currency,
-          category: expense.category,
-          confidence: expense.confidence,
-          rawInput: expense.rawInput || rawInput,
-          date: new Date(expense.date)
-        }
-      });
-
-      // Store embedding asynchronously (don't wait)
-      storeExpenseEmbedding(created).catch(err => {
-        console.error('Failed to store embedding:', err);
-      });
-
-      return created;
-    })
-  );
-
-  // Invalidate cache
-  await deleteCachePattern(`expenses:${userId}:*`);
-  await deleteCachePattern(`summary:${userId}:*`);
-
-  // Convert to user's currency for response
-  const convertedExpenses = await convertAmountsToCurrency(createdExpenses, req.user!.currency || 'USD');
-
-  // Flag low-confidence expenses
-  const needsReview = createdExpenses.filter(
-    e => e.confidence < parseFloat(process.env.CLASSIFICATION_CONFIDENCE_THRESHOLD || '0.7')
-  );
+  const persisted = await persistParsedExpenses(userId, parsedExpenses, rawInput, req.user!.currency || 'USD');
 
   res.status(201).json({
     success: true,
-    message: `Successfully parsed ${createdExpenses.length} expense(s)`,
+    message: `Successfully parsed ${persisted.expenses.length} expense(s)`,
     data: {
-      expenses: convertedExpenses,
-      needsReview: needsReview.length > 0 ? needsReview.map(e => e.id) : []
+      expenses: persisted.expenses,
+      needsReview: persisted.needsReview
     }
+  });
+});
+
+// @desc    Enqueue expense parsing/creation job
+// @route   POST /api/expenses/parse/async
+// @access  Private
+export const enqueueParseAndCreateExpenses = asyncHandler(async (req: AuthRequest, res: Response) => {
+  const { rawInput, create = true } = req.body as { rawInput: string; create?: boolean };
+  const userId = req.user!.id;
+
+  const job = await expenseParseQueue.add('parse-expense', {
+    userId,
+    rawInput,
+    create: create !== false,
+    userCurrency: req.user!.currency || 'USD',
+  });
+
+  res.status(202).json({
+    success: true,
+    message: 'Expense parsing started',
+    data: { jobId: job.id },
+  });
+});
+
+// @desc    Get parse job status
+// @route   GET /api/expenses/parse/jobs/:jobId
+// @access  Private
+export const getExpenseParseJobStatus = asyncHandler(async (req: AuthRequest, res: Response, next: NextFunction) => {
+  const { jobId } = req.params;
+  const userId = req.user!.id;
+  const job = await expenseParseQueue.getJob(jobId);
+
+  if (!job) {
+    return next(new AppError('Job not found', 404));
+  }
+
+  const ownerId = job.data.userId;
+  if (ownerId !== userId) {
+    return next(new AppError('Not authorized to access this job', 403));
+  }
+
+  const state = await job.getState();
+  if (state === 'completed') {
+    return res.json({
+      success: true,
+      data: {
+        jobId,
+        status: 'completed',
+        result: job.returnvalue,
+      },
+    });
+  }
+
+  if (state === 'failed') {
+    return res.json({
+      success: true,
+      data: {
+        jobId,
+        status: 'failed',
+        error: job.failedReason || 'Failed to parse expenses',
+      },
+    });
+  }
+
+  const progress = typeof job.progress === 'number' ? job.progress : 0;
+  res.json({
+    success: true,
+    data: {
+      jobId,
+      status: state,
+      progress,
+    },
   });
 });
 

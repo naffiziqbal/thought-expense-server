@@ -2,6 +2,8 @@ import express, { Router } from 'express';
 import { body, query, param } from 'express-validator';
 import {
   parseAndCreateExpenses,
+  enqueueParseAndCreateExpenses,
+  getExpenseParseJobStatus,
   createExpense,
   getExpenses,
   getExpenseById,
@@ -59,6 +61,8 @@ const queryExpensesValidation = [
 
 // Routes
 router.post('/parse', parseExpensesValidation, validate, parseAndCreateExpenses);
+router.post('/parse/async', parseExpensesValidation, validate, enqueueParseAndCreateExpenses);
+router.get('/parse/jobs/:jobId', param('jobId').isString().notEmpty(), validate, getExpenseParseJobStatus);
 router.post('/', createExpenseValidation, validate, createExpense);
 router.get('/', queryExpensesValidation, validate, getExpenses);
 router.get('/summary', getCategorySummary);

@@ -5,7 +5,7 @@
 
 set -e
 
-BASE_URL="http://localhost:3001"
+BASE_URL="http://localhost:7100"
 EMAIL="test@example.com"
 PASSWORD="testpassword123"
 TOKEN=""

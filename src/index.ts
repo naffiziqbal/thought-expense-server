@@ -14,9 +14,10 @@ import expenseRoutes from "./routes/expense.routes";
 import insightRoutes from "./routes/insight.routes";
 import budgetRoutes from "./routes/budget.routes";
 import { errorHandler } from "./middleware/error.middleware";
+import { startParseWorkers, stopParseWorkers } from "./workers/parse.worker";
 
 const app = express();
-const PORT = process.env.PORT || 3001;
+const PORT = process.env.PORT || 7100;
 
 app.set("trust proxy", true);
 
@@ -29,13 +30,15 @@ app.use(
   })
 );
 
-// Rate limiting
-const limiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100, // Limit each IP to 100 requests per windowMs
-  message: "Too many requests from this IP, please try again later.",
-});
-app.use("/api", limiter);
+// Rate limiting (production only)
+if (process.env.NODE_ENV === "production") {
+  const limiter = rateLimit({
+    windowMs: 15 * 60 * 1000, // 15 minutes
+    max: 100, // Limit each IP to 100 requests per windowMs
+    message: "Too many requests from this IP, please try again later.",
+  });
+  app.use("/api", limiter);
+}
 
 // Body parsing middleware
 app.use(express.json({ limit: "10mb" }));
@@ -91,6 +94,10 @@ const startServer = async (): Promise<void> => {
     await initPinecone();
     console.log("✅ Pinecone initialized");
 
+    // Start background workers
+    startParseWorkers();
+    console.log("✅ Parse workers started");
+
     // Start server
     app.listen(PORT, () => {
       console.log(`🚀 Server running on port ${PORT}`);
@@ -106,12 +113,12 @@ const startServer = async (): Promise<void> => {
 // Graceful shutdown
 process.on("SIGTERM", () => {
   console.log("SIGTERM signal received: closing HTTP server");
-  process.exit(0);
+  stopParseWorkers().finally(() => process.exit(0));
 });
 
 process.on("SIGINT", () => {
   console.log("SIGINT signal received: closing HTTP server");
-  process.exit(0);
+  stopParseWorkers().finally(() => process.exit(0));
 });
 
 startServer();

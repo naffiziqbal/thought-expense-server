@@ -5,6 +5,7 @@ import { AppError } from '../middleware/error.middleware';
 import { AuthRequest } from '../middleware/auth.middleware';
 import { convertAmountsToCurrency } from '../services/exchangeRate.service';
 import { parseCategoryBudgets } from '../services/gemini.service';
+import { categoryBudgetParseQueue } from '../queues/categoryBudgetParse.queue';
 
 // @desc    Create or update monthly budget
 // @route   POST /api/budgets
@@ -255,6 +256,73 @@ export const parseCategoryBudgetsHandler = asyncHandler(async (req: AuthRequest,
   res.json({
     success: true,
     data: { items: parsed },
+  });
+});
+
+export const enqueueParseCategoryBudgets = asyncHandler(async (req: AuthRequest, res: Response) => {
+  const userId = req.user!.id;
+  const { text } = req.body as { text: string };
+
+  if (!text || !text.trim()) {
+    throw new AppError('text is required', 400);
+  }
+
+  const job = await categoryBudgetParseQueue.add('parse-category-budget', {
+    userId,
+    text,
+  });
+
+  res.status(202).json({
+    success: true,
+    message: 'Category budget parsing started',
+    data: { jobId: job.id },
+  });
+});
+
+export const getCategoryBudgetParseJobStatus = asyncHandler(async (req: AuthRequest, res: Response) => {
+  const userId = req.user!.id;
+  const { jobId } = req.params;
+  const job = await categoryBudgetParseQueue.getJob(jobId);
+
+  if (!job) {
+    throw new AppError('Job not found', 404);
+  }
+
+  if (job.data.userId !== userId) {
+    throw new AppError('Not authorized to access this job', 403);
+  }
+
+  const state = await job.getState();
+  if (state === 'completed') {
+    res.json({
+      success: true,
+      data: {
+        jobId,
+        status: 'completed',
+        result: job.returnvalue,
+      },
+    });
+    return;
+  }
+
+  if (state === 'failed') {
+    res.json({
+      success: true,
+      data: {
+        jobId,
+        status: 'failed',
+        error: job.failedReason || 'Failed to parse category budgets',
+      },
+    });
+    return;
+  }
+
+  res.json({
+    success: true,
+    data: {
+      jobId,
+      status: state,
+    },
   });
 });
 

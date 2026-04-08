@@ -73,11 +73,11 @@ npm run prisma:migrate
 npm run dev
 ```
 
-Backend will run on `http://localhost:3001`
+Backend will run on `http://localhost:7100`
 
 4. **Test it**
 ```bash
-curl http://localhost:3001/health
+curl http://localhost:7100/health
 ```
 
 ## 📖 Documentation
@@ -89,7 +89,7 @@ curl http://localhost:3001/health
 
 ### 1. Signup
 ```bash
-curl -X POST http://localhost:3001/api/auth/signup \
+curl -X POST http://localhost:7100/api/auth/signup \
   -H "Content-Type: application/json" \
   -d '{
     "email": "you@example.com",
@@ -100,7 +100,7 @@ curl -X POST http://localhost:3001/api/auth/signup \
 
 ### 2. Parse Expenses
 ```bash
-curl -X POST http://localhost:3001/api/expenses/parse \
+curl -X POST http://localhost:7100/api/expenses/parse \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer YOUR_TOKEN" \
   -d '{
@@ -110,7 +110,7 @@ curl -X POST http://localhost:3001/api/expenses/parse \
 
 ### 3. View Summary
 ```bash
-curl -X GET http://localhost:3001/api/expenses/summary \
+curl -X GET http://localhost:7100/api/expenses/summary \
   -H "Authorization: Bearer YOUR_TOKEN"
 ```
 

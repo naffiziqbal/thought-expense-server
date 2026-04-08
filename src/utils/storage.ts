@@ -77,7 +77,7 @@ export function getFullUrl(storedPath: string | null | undefined): string | null
   if (!storedPath || !storedPath.startsWith('/')) return null;
 
   const cdnBase = process.env.CDN_BASE_URL;
-  const apiBase = process.env.API_BASE_URL || `http://localhost:${process.env.PORT || 3001}`;
+  const apiBase = process.env.API_BASE_URL || `http://localhost:${process.env.PORT || 7100}`;
 
   const base = cdnBase ? cdnBase.replace(/\/$/, '') : `${apiBase.replace(/\/$/, '')}/uploads`;
   return `${base}${storedPath}`;

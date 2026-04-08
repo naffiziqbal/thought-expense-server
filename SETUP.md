@@ -106,9 +106,9 @@ You should see:
 ```
 ✅ Redis connected
 ✅ Pinecone initialized
-🚀 Server running on port 3001
+🚀 Server running on port 7100
 📝 Environment: development
-🔗 Health check: http://localhost:3001/health
+🔗 Health check: http://localhost:7100/health
 ```
 
 ### 8. Test the API
@@ -117,7 +117,7 @@ Open a new terminal and test:
 
 ```bash
 # Health check
-curl http://localhost:3001/health
+curl http://localhost:7100/health
 ```
 
 Should return:
@@ -132,7 +132,7 @@ Should return:
 ### 9. Create Your First User
 
 ```bash
-curl -X POST http://localhost:3001/api/auth/signup \
+curl -X POST http://localhost:7100/api/auth/signup \
   -H "Content-Type: application/json" \
   -d '{
     "email": "test@example.com",
@@ -146,7 +146,7 @@ Save the `token` from the response - you'll need it for authenticated requests.
 ### 10. Parse Your First Expense
 
 ```bash
-curl -X POST http://localhost:3001/api/expenses/parse \
+curl -X POST http://localhost:7100/api/expenses/parse \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer YOUR_TOKEN_HERE" \
   -d '{
@@ -242,8 +242,8 @@ Once backend is running:
 
 ### Important URLs
 
-- Backend API: http://localhost:3001
-- Health Check: http://localhost:3001/health
+- Backend API: http://localhost:7100
+- Health Check: http://localhost:7100/health
 - Prisma Studio: http://localhost:5555 (when running)
 
 ### Important Commands

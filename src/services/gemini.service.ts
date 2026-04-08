@@ -1,13 +1,20 @@
 import { GoogleGenerativeAI } from '@google/generative-ai';
+import { findCategoryFromCatalog } from './categoryCatalog.service';
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || '');
 
 // Model configuration from environment variables
-const PARSING_MODEL = process.env.PARSING_MODEL || 'gemini-flash-latest';
-const INSIGHTS_MODEL = process.env.INSIGHTS_MODEL || 'gemini-flash-latest';
+const PARSING_MODEL = process.env.PARSING_MODEL || 'gemini-2.5-flash';
+const INSIGHTS_MODEL = process.env.INSIGHTS_MODEL || 'gemini-2.5-flash';
 
-// Fallback models when primary returns 503 / high demand
-const PARSING_FALLBACK_MODELS = ['gemini-2.0-flash', 'gemini-1.5-flash', 'gemini-1.5-pro'];
+// Fallback models when primary returns 503 / high demand.
+// Keep this list to currently available Gemini models for generateContent.
+const PARSING_FALLBACK_MODELS = (
+  process.env.PARSING_FALLBACK_MODELS || 'gemini-2.0-flash,gemini-1.5-flash'
+)
+  .split(',')
+  .map((m) => m.trim())
+  .filter(Boolean);
 
 function isRetryableError(error: unknown): boolean {
   const msg = error instanceof Error ? error.message : String(error);
@@ -227,16 +234,22 @@ Return JSON array of expenses:`;
     // Ensure it's an array
     const expenses = Array.isArray(parsed) ? parsed : [parsed];
 
-    // Validate and normalize
-    return expenses.map(exp => ({
-      description: String(exp.description || '').trim(),
-      amount: parseFloat(exp.amount) || 0,
-      currency: String(exp.currency || userCurrency).toUpperCase(),
-      category: String(exp.category || 'Other').trim(),
-      confidence: parseFloat(exp.confidence) || 0.5,
-      date: exp.date || new Date().toISOString().split('T')[0],
-      rawInput: exp.rawInput || rawInput
-    }));
+    // Validate and normalize. Use fixed catalog category when there's a strong match.
+    return expenses.map(exp => {
+      const description = String(exp.description || '').trim();
+      const aiCategory = String(exp.category || 'Other').trim();
+      const catalogCategory = findCategoryFromCatalog(description);
+
+      return {
+        description,
+        amount: parseFloat(exp.amount) || 0,
+        currency: String(exp.currency || userCurrency).toUpperCase(),
+        category: catalogCategory || aiCategory,
+        confidence: catalogCategory ? 0.99 : (parseFloat(exp.confidence) || 0.5),
+        date: exp.date || new Date().toISOString().split('T')[0],
+        rawInput: exp.rawInput || rawInput
+      };
+    });
 
   } catch (error: any) {
     console.error('Gemini parsing error:', error);

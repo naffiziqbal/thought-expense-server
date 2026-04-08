@@ -6,6 +6,8 @@ import {
   getBudgetHistory,
   deleteBudget,
   parseCategoryBudgetsHandler,
+  enqueueParseCategoryBudgets,
+  getCategoryBudgetParseJobStatus,
   upsertCategoryBudgets,
   getCurrentCategoryBudgets,
 } from '../controllers/budget.controller';
@@ -45,6 +47,13 @@ router.post(
   validate,
   parseCategoryBudgetsHandler
 );
+router.post(
+  '/categories/parse/async',
+  body('text').isString().isLength({ min: 3 }).withMessage('text is required'),
+  validate,
+  enqueueParseCategoryBudgets
+);
+router.get('/categories/parse/jobs/:jobId', param('jobId').isString().notEmpty(), validate, getCategoryBudgetParseJobStatus);
 
 router.post(
   '/categories',

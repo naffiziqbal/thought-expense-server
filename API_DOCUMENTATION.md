@@ -1,7 +1,7 @@
 # ThoughtExpense API Documentation
 
 **Version**: 1.0.0  
-**Base URL**: `https://api.thoughtexpense.com` (Production) | `http://localhost:3001` (Development)  
+**Base URL**: `https://api.thoughtexpense.com` (Production) | `http://localhost:7100` (Development)  
 **Protocol**: HTTPS (Production) | HTTP (Development)
 
 ---
@@ -227,7 +227,7 @@ Create a new user account.
 #### cURL Example
 
 ```bash
-curl -X POST http://localhost:3001/api/auth/signup \
+curl -X POST http://localhost:7100/api/auth/signup \
   -H "Content-Type: application/json" \
   -d '{
     "email": "user@example.com",
@@ -293,7 +293,7 @@ Authenticate an existing user.
 #### cURL Example
 
 ```bash
-curl -X POST http://localhost:3001/api/auth/login \
+curl -X POST http://localhost:7100/api/auth/login \
   -H "Content-Type: application/json" \
   -d '{
     "email": "user@example.com",
@@ -345,7 +345,7 @@ Authorization: Bearer <your_jwt_token>
 #### cURL Example
 
 ```bash
-curl -X GET http://localhost:3001/api/auth/me \
+curl -X GET http://localhost:7100/api/auth/me \
   -H "Authorization: Bearer YOUR_JWT_TOKEN"
 ```
 
@@ -475,7 +475,7 @@ electricity bill: 80 euros
 #### cURL Example
 
 ```bash
-curl -X POST http://localhost:3001/api/expenses/parse \
+curl -X POST http://localhost:7100/api/expenses/parse \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer YOUR_JWT_TOKEN" \
   -d '{
@@ -538,11 +538,11 @@ Retrieve user's expenses with optional filters.
 
 ```bash
 # Get all expenses
-curl -X GET "http://localhost:3001/api/expenses" \
+curl -X GET "http://localhost:7100/api/expenses" \
   -H "Authorization: Bearer YOUR_JWT_TOKEN"
 
 # With filters
-curl -X GET "http://localhost:3001/api/expenses?startDate=2024-01-01&category=Food&limit=20" \
+curl -X GET "http://localhost:7100/api/expenses?startDate=2024-01-01&category=Food&limit=20" \
   -H "Authorization: Bearer YOUR_JWT_TOKEN"
 ```
 
@@ -596,7 +596,7 @@ Retrieve a single expense by its ID.
 #### cURL Example
 
 ```bash
-curl -X GET "http://localhost:3001/api/expenses/uuid-123" \
+curl -X GET "http://localhost:7100/api/expenses/uuid-123" \
   -H "Authorization: Bearer YOUR_JWT_TOKEN"
 ```
 
@@ -670,7 +670,7 @@ When you update an expense's category, the system learns from this correction:
 #### cURL Example
 
 ```bash
-curl -X PATCH "http://localhost:3001/api/expenses/uuid-123" \
+curl -X PATCH "http://localhost:7100/api/expenses/uuid-123" \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer YOUR_JWT_TOKEN" \
   -d '{
@@ -715,7 +715,7 @@ Delete an expense.
 #### cURL Example
 
 ```bash
-curl -X DELETE "http://localhost:3001/api/expenses/uuid-123" \
+curl -X DELETE "http://localhost:7100/api/expenses/uuid-123" \
   -H "Authorization: Bearer YOUR_JWT_TOKEN"
 ```
 
@@ -777,11 +777,11 @@ Get aggregated spending by category.
 
 ```bash
 # All time
-curl -X GET "http://localhost:3001/api/expenses/summary" \
+curl -X GET "http://localhost:7100/api/expenses/summary" \
   -H "Authorization: Bearer YOUR_JWT_TOKEN"
 
 # Date range
-curl -X GET "http://localhost:3001/api/expenses/summary?startDate=2024-01-01&endDate=2024-01-31" \
+curl -X GET "http://localhost:7100/api/expenses/summary?startDate=2024-01-01&endDate=2024-01-31" \
   -H "Authorization: Bearer YOUR_JWT_TOKEN"
 ```
 
@@ -840,7 +840,7 @@ Find similar expenses using AI-powered similarity search.
 #### cURL Example
 
 ```bash
-curl -X GET "http://localhost:3001/api/expenses/uuid-123/similar" \
+curl -X GET "http://localhost:7100/api/expenses/uuid-123/similar" \
   -H "Authorization: Bearer YOUR_JWT_TOKEN"
 ```
 
@@ -949,7 +949,7 @@ None required
 #### cURL Example
 
 ```bash
-curl -X POST "http://localhost:3001/api/insights/generate" \
+curl -X POST "http://localhost:7100/api/insights/generate" \
   -H "Authorization: Bearer YOUR_JWT_TOKEN"
 ```
 
@@ -995,11 +995,11 @@ Retrieve previously generated insights.
 
 ```bash
 # Get all insights
-curl -X GET "http://localhost:3001/api/insights" \
+curl -X GET "http://localhost:7100/api/insights" \
   -H "Authorization: Bearer YOUR_JWT_TOKEN"
 
 # Filter by type
-curl -X GET "http://localhost:3001/api/insights?type=weekly&limit=5" \
+curl -X GET "http://localhost:7100/api/insights?type=weekly&limit=5" \
   -H "Authorization: Bearer YOUR_JWT_TOKEN"
 ```
 
@@ -1084,7 +1084,7 @@ curl -X GET "http://localhost:3001/api/insights?type=weekly&limit=5" \
 ```javascript
 // Signup
 const signup = async () => {
-  const response = await fetch('http://localhost:3001/api/auth/signup', {
+  const response = await fetch('http://localhost:7100/api/auth/signup', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -1101,7 +1101,7 @@ const signup = async () => {
 // Parse Expenses
 const parseExpenses = async (rawInput) => {
   const token = localStorage.getItem('token');
-  const response = await fetch('http://localhost:3001/api/expenses/parse', {
+  const response = await fetch('http://localhost:7100/api/expenses/parse', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -1116,7 +1116,7 @@ const parseExpenses = async (rawInput) => {
 const getExpenses = async (filters = {}) => {
   const token = localStorage.getItem('token');
   const params = new URLSearchParams(filters);
-  const response = await fetch(`http://localhost:3001/api/expenses?${params}`, {
+  const response = await fetch(`http://localhost:7100/api/expenses?${params}`, {
     headers: { 'Authorization': `Bearer ${token}` }
   });
   return await response.json();
@@ -1128,7 +1128,7 @@ const getExpenses = async (filters = {}) => {
 ```python
 import requests
 
-BASE_URL = "http://localhost:3001"
+BASE_URL = "http://localhost:7100"
 
 # Signup
 def signup(email, password, name=None):
@@ -1172,7 +1172,7 @@ expenses = get_expenses(token, category="Food", limit=20)
 ```javascript
 const axios = require('axios');
 
-const BASE_URL = 'http://localhost:3001';
+const BASE_URL = 'http://localhost:7100';
 let token = null;
 
 // Signup
@@ -1221,33 +1221,33 @@ const generateInsights = async () => {
 TOKEN="your_jwt_token_here"
 
 # Signup
-curl -X POST http://localhost:3001/api/auth/signup \
+curl -X POST http://localhost:7100/api/auth/signup \
   -H "Content-Type: application/json" \
   -d '{"email":"user@example.com","password":"pass123","name":"John"}'
 
 # Login
-curl -X POST http://localhost:3001/api/auth/login \
+curl -X POST http://localhost:7100/api/auth/login \
   -H "Content-Type: application/json" \
   -d '{"email":"user@example.com","password":"pass123"}'
 
 # Parse Expenses
-curl -X POST http://localhost:3001/api/expenses/parse \
+curl -X POST http://localhost:7100/api/expenses/parse \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $TOKEN" \
   -d '{"rawInput":"coffee 5\nrent 1200"}'
 
 # Get Expenses with Filters
-curl -G http://localhost:3001/api/expenses \
+curl -G http://localhost:7100/api/expenses \
   -H "Authorization: Bearer $TOKEN" \
   --data-urlencode "category=Food" \
   --data-urlencode "limit=20"
 
 # Get Summary
-curl -X GET http://localhost:3001/api/expenses/summary \
+curl -X GET http://localhost:7100/api/expenses/summary \
   -H "Authorization: Bearer $TOKEN"
 
 # Generate Insights
-curl -X POST http://localhost:3001/api/insights/generate \
+curl -X POST http://localhost:7100/api/insights/generate \
   -H "Authorization: Bearer $TOKEN"
 ```
 
@@ -1279,7 +1279,7 @@ Import this collection into Postman for easy API testing.
   "variable": [
     {
       "key": "base_url",
-      "value": "http://localhost:3001",
+      "value": "http://localhost:7100",
       "type": "string"
     },
     {
