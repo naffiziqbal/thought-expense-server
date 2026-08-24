@@ -12,6 +12,7 @@ import {
   resetPassword,
   changePassword,
   verifyResetOtp,
+  deleteAccount,
 } from '../controllers/auth.controller';
 import { protect } from '../middleware/auth.middleware';
 import { validate } from '../middleware/validation.middleware';
@@ -50,6 +51,10 @@ const verifyOtpValidation = [
   body('otp').isLength({ min: 6, max: 6 }).isNumeric().withMessage('Code must be 6 digits'),
 ];
 
+const deleteAccountValidation = [
+  body('password').notEmpty().withMessage('Password is required'),
+];
+
 const changePasswordValidation = [
   body('currentPassword').notEmpty().withMessage('Current password is required'),
   body('newPassword').isLength({ min: 6 }).withMessage('New password must be at least 6 characters'),
@@ -79,5 +84,6 @@ router.post('/forgot-password', forgotPasswordLimiter, forgotPasswordValidation,
 router.post('/verify-otp', otpVerifyLimiter, verifyOtpValidation, validate, verifyResetOtp);
 router.post('/reset-password', resetPasswordValidation, validate, resetPassword);
 router.post('/change-password', protect, changePasswordValidation, validate, changePassword);
+router.delete('/account', protect, deleteAccountValidation, validate, deleteAccount);
 
 export default router;

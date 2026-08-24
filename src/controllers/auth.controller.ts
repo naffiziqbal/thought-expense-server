@@ -4,7 +4,8 @@ import jwt, { SignOptions } from 'jsonwebtoken';
 import { sendPasswordResetOtpEmail } from '../services/email.service';
 import multer from 'multer';
 import crypto from 'crypto';
-import { setCache, getCache, deleteCache } from '../config/redis';
+import { deleteUserVectors } from '../services/pinecone.service';
+import { setCache, getCache, deleteCache, deleteCachePattern } from '../config/redis';
 import prisma from '../config/prisma';
 import { asyncHandler } from '../middleware/error.middleware';
 import { AppError } from '../middleware/error.middleware';
@@ -424,5 +425,54 @@ export const verifyResetOtp = asyncHandler(async (req: AuthRequest, res: Respons
   res.json({
     success: true,
     data: { resetToken },
+  });
+});
+
+// @desc    Permanently delete the authenticated user's account and all data
+// @route   DELETE /api/auth/account
+// @access  Private
+export const deleteAccount = asyncHandler(async (req: AuthRequest, res: Response, next: NextFunction) => {
+  const { password } = req.body;
+  const userId = req.user!.id;
+
+  if (!password) {
+    return next(new AppError('Password is required to delete your account', 400));
+  }
+
+  const user = await prisma.user.findUnique({ where: { id: userId } });
+  if (!user) {
+    return next(new AppError('User not found', 404));
+  }
+
+  const isMatch = await bcrypt.compare(password, user.password);
+  if (!isMatch) {
+    return next(new AppError('Incorrect password', 401));
+  }
+
+  // Best-effort cleanup of external data (vector index, stored avatar, caches)
+  try {
+    await deleteUserVectors(userId);
+  } catch (err) {
+    console.error('Pinecone cleanup failed during account deletion:', err);
+  }
+  if (user.profilePicture) {
+    try {
+      await deleteFromSpace(user.profilePicture);
+    } catch (err) {
+      console.error('Avatar cleanup failed during account deletion:', err);
+    }
+  }
+  try {
+    await deleteCachePattern(`*${userId}*`);
+  } catch (err) {
+    console.error('Cache cleanup failed during account deletion:', err);
+  }
+
+  // Delete the user row; related rows cascade (expenses, vectors, budgets, insights, mappings)
+  await prisma.user.delete({ where: { id: userId } });
+
+  res.json({
+    success: true,
+    message: 'Your account and all associated data have been permanently deleted.',
   });
 });
