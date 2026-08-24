@@ -11,6 +11,7 @@ import {
   forgotPassword,
   resetPassword,
   changePassword,
+  verifyResetOtp,
 } from '../controllers/auth.controller';
 import { protect } from '../middleware/auth.middleware';
 import { validate } from '../middleware/validation.middleware';
@@ -44,6 +45,11 @@ const resetPasswordValidation = [
   body('password').isLength({ min: 6 }).withMessage('Password must be at least 6 characters'),
 ];
 
+const verifyOtpValidation = [
+  body('email').isEmail().normalizeEmail().withMessage('Please provide a valid email'),
+  body('otp').isLength({ min: 6, max: 6 }).isNumeric().withMessage('Code must be 6 digits'),
+];
+
 const changePasswordValidation = [
   body('currentPassword').notEmpty().withMessage('Current password is required'),
   body('newPassword').isLength({ min: 6 }).withMessage('New password must be at least 6 characters'),
@@ -56,6 +62,13 @@ const forgotPasswordLimiter = rateLimit({
   message: 'Too many reset requests. Please try again later.',
 });
 
+// Lenient limiter for OTP verification (attempts are also capped per code)
+const otpVerifyLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 20,
+  message: 'Too many attempts. Please try again later.',
+});
+
 // Routes
 router.post('/signup', signupValidation, validate, signup);
 router.post('/login', loginValidation, validate, login);
@@ -63,6 +76,7 @@ router.get('/me', protect, getMe);
 router.patch('/profile', protect, updateProfileValidation, validate, updateProfile);
 router.post('/profile/picture', protect, avatarUpload.single('image'), uploadProfilePicture);
 router.post('/forgot-password', forgotPasswordLimiter, forgotPasswordValidation, validate, forgotPassword);
+router.post('/verify-otp', otpVerifyLimiter, verifyOtpValidation, validate, verifyResetOtp);
 router.post('/reset-password', resetPasswordValidation, validate, resetPassword);
 router.post('/change-password', protect, changePasswordValidation, validate, changePassword);
 

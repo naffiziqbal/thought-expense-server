@@ -1,8 +1,10 @@
 import { Response, NextFunction } from 'express';
 import bcrypt from 'bcryptjs';
 import jwt, { SignOptions } from 'jsonwebtoken';
-import { sendForgotPasswordEmail } from '../services/email.service';
+import { sendPasswordResetOtpEmail } from '../services/email.service';
 import multer from 'multer';
+import crypto from 'crypto';
+import { setCache, getCache, deleteCache } from '../config/redis';
 import prisma from '../config/prisma';
 import { asyncHandler } from '../middleware/error.middleware';
 import { AppError } from '../middleware/error.middleware';
@@ -269,18 +271,19 @@ export const forgotPassword = asyncHandler(async (req: AuthRequest, res: Respons
   });
 
   // Always return success to prevent email enumeration
-  const successMessage = 'If an account exists with that email, you will receive a password reset link.';
+  const successMessage = 'If an account exists with that email, you will receive a 6-digit reset code.';
 
   if (!user) {
     res.json({ success: true, message: successMessage });
     return;
   }
 
-  const token = generatePasswordResetToken(user.id, user.email);
-  const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
-  const resetLink = `${frontendUrl}/auth/reset-password?token=${token}`;
+  // Generate a 6-digit OTP and store its hash for 10 minutes
+  const otp = crypto.randomInt(100000, 1000000).toString();
+  const otpHash = crypto.createHash('sha256').update(otp).digest('hex');
+  await setCache(`pwd-otp:${user.email}`, { otpHash, attempts: 0 }, 600);
 
-  const result = await sendForgotPasswordEmail(user.email, resetLink);
+  const result = await sendPasswordResetOtpEmail(user.email, otp);
 
   if (!result.success) {
     return next(new AppError(result.error || 'Failed to send reset email. Please try again later.', 500));
@@ -378,5 +381,48 @@ export const changePassword = asyncHandler(async (req: AuthRequest, res: Respons
   res.json({
     success: true,
     message: 'Password updated successfully.',
+  });
+});
+
+// @desc    Verify password-reset OTP and exchange it for a reset token
+// @route   POST /api/auth/verify-otp
+// @access  Public
+export const verifyResetOtp = asyncHandler(async (req: AuthRequest, res: Response, next: NextFunction) => {
+  const { email, otp } = req.body;
+
+  if (!email || !otp) {
+    return next(new AppError('Email and code are required', 400));
+  }
+
+  const key = `pwd-otp:${email}`;
+  const record = await getCache<{ otpHash: string; attempts: number }>(key);
+
+  if (!record) {
+    return next(new AppError('Invalid or expired code. Please request a new one.', 400));
+  }
+
+  if (record.attempts >= 5) {
+    await deleteCache(key);
+    return next(new AppError('Too many attempts. Please request a new code.', 429));
+  }
+
+  const otpHash = crypto.createHash('sha256').update(String(otp)).digest('hex');
+  if (otpHash !== record.otpHash) {
+    await setCache(key, { ...record, attempts: record.attempts + 1 }, 600);
+    return next(new AppError('Invalid or expired code. Please request a new one.', 400));
+  }
+
+  const user = await prisma.user.findUnique({ where: { email } });
+  if (!user) {
+    await deleteCache(key);
+    return next(new AppError('Invalid or expired code. Please request a new one.', 400));
+  }
+
+  await deleteCache(key);
+  const resetToken = generatePasswordResetToken(user.id, user.email);
+
+  res.json({
+    success: true,
+    data: { resetToken },
   });
 });

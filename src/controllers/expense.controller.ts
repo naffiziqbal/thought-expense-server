@@ -1,8 +1,9 @@
 import { Response, NextFunction } from 'express';
+import multer from 'multer';
 import prisma from '../config/prisma';
 import { asyncHandler } from '../middleware/error.middleware';
 import { AppError } from '../middleware/error.middleware';
-import { parseExpenses, suggestCategory } from '../services/gemini.service';
+import { parseExpenses, suggestCategory, extractReceiptText } from '../services/gemini.service';
 import { getUserContext, storeExpenseEmbedding, updateCategoryMapping, findSimilarExpenses, deleteExpenseEmbedding } from '../services/rag.service';
 import { convertAmountsToCurrency } from '../services/exchangeRate.service';
 import { setCache, getCache, deleteCache, deleteCachePattern } from '../config/redis';
@@ -620,5 +621,43 @@ export const suggestCategoryForDescription = asyncHandler(async (req: AuthReques
         }))
       ]
     }
+  });
+});
+
+// Multer config for receipt upload (memory storage) - exported for routes
+export const receiptUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB
+  fileFilter: (_req, file, cb) => {
+    const allowed = ['image/jpeg', 'image/png', 'image/webp', 'image/heic', 'image/heif'];
+    if (allowed.includes(file.mimetype)) {
+      cb(null, true);
+    } else {
+      cb(new Error('Only JPEG, PNG, WebP, and HEIC images are allowed'));
+    }
+  },
+});
+
+// @desc    OCR a receipt image into raw expense text
+// @route   POST /api/expenses/ocr
+// @access  Private (Premium)
+export const ocrReceipt = asyncHandler(async (req: AuthRequest, res: Response, next: NextFunction) => {
+  if (!req.user!.isPremium) {
+    return next(new AppError('Receipt scanning is a Premium feature', 403));
+  }
+
+  const file = req.file;
+  if (!file) {
+    return next(new AppError('No image file provided', 400));
+  }
+
+  const text = await extractReceiptText(file.buffer.toString('base64'), file.mimetype);
+  if (!text) {
+    return next(new AppError('Could not read any expenses from the image', 422));
+  }
+
+  res.json({
+    success: true,
+    data: { text },
   });
 });

@@ -458,3 +458,37 @@ Return as JSON array of strings:
 };
 
 export { ParsedExpense, UserContext, ExpenseSummary };
+
+// ---------------------------------------------------------------------------
+// Receipt OCR (Gemini vision): extract expense lines from a receipt image
+// ---------------------------------------------------------------------------
+export const extractReceiptText = async (
+  imageBase64: string,
+  mimeType: string
+): Promise<string> => {
+  const prompt = `You are reading a photo of a receipt, invoice, or a handwritten/printed list of expenses.
+Extract every purchasable line item with its price.
+
+OUTPUT RULES:
+- Output PLAIN TEXT ONLY: one expense per line, formatted as "<description> <amount>"
+- Use the item names as written (short, human-readable)
+- Amounts: numbers only, no currency symbols
+- Skip subtotals, tax lines, change, card numbers, addresses and totals — items only.
+  If only a grand total is readable, output one line: "<store name> <total>"
+- If the image contains no readable expenses, output exactly: NONE`;
+
+  const modelsToTry = [PARSING_MODEL, ...PARSING_FALLBACK_MODELS.filter((m) => m !== PARSING_MODEL)];
+
+  const text = await generateWithRetryAndFallback(modelsToTry, async (modelName) => {
+    const model = genAI.getGenerativeModel({ model: modelName });
+    const result = await model.generateContent([
+      { inlineData: { data: imageBase64, mimeType } },
+      prompt,
+    ]);
+    return result.response.text();
+  });
+
+  const cleaned = (text || '').trim();
+  if (!cleaned || /^NONE$/i.test(cleaned)) return '';
+  return cleaned;
+};

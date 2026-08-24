@@ -12,7 +12,9 @@ import {
   getCategorySummary,
   getSimilarExpenses,
   suggestCategoryForDescription,
-  exportExpenses
+  exportExpenses,
+  ocrReceipt,
+  receiptUpload
 } from '../controllers/expense.controller';
 import { protect } from '../middleware/auth.middleware';
 import { validate } from '../middleware/validation.middleware';
@@ -61,6 +63,7 @@ const queryExpensesValidation = [
 
 // Routes
 router.post('/parse', parseExpensesValidation, validate, parseAndCreateExpenses);
+router.post('/ocr', receiptUpload.single('image'), ocrReceipt);
 router.post('/parse/async', parseExpensesValidation, validate, enqueueParseAndCreateExpenses);
 router.get('/parse/jobs/:jobId', param('jobId').isString().notEmpty(), validate, getExpenseParseJobStatus);
 router.post('/', createExpenseValidation, validate, createExpense);
