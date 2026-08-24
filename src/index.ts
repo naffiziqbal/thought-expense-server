@@ -13,6 +13,7 @@ import authRoutes from "./routes/auth.routes";
 import expenseRoutes from "./routes/expense.routes";
 import insightRoutes from "./routes/insight.routes";
 import budgetRoutes from "./routes/budget.routes";
+import billingRoutes from "./routes/billing.routes";
 import { errorHandler } from "./middleware/error.middleware";
 import { startParseWorkers, stopParseWorkers } from "./workers/parse.worker";
 
@@ -71,6 +72,7 @@ app.use("/api/auth", authRoutes);
 app.use("/api/expenses", expenseRoutes);
 app.use("/api/insights", insightRoutes);
 app.use("/api/budgets", budgetRoutes);
+app.use("/api/billing", billingRoutes);
 
 // 404 handler
 app.use("*", (_req: Request, res: Response) => {

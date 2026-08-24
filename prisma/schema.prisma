@@ -18,6 +18,10 @@ model User {
   currency       String    @default("USD")
   isPremium      Boolean   @default(false)
   premiumSince   DateTime?
+  premiumUntil          DateTime?
+  subscriptionStatus    String?   // active | cancelled | grace | expired
+  subscriptionProductId String?
+  subscriptionStore     String?   // play_store | app_store | promo
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
 
