@@ -14,7 +14,8 @@ import {
   suggestCategoryForDescription,
   exportExpenses,
   ocrReceipt,
-  receiptUpload
+  receiptUpload,
+  getRecurringExpenses
 } from '../controllers/expense.controller';
 import { protect } from '../middleware/auth.middleware';
 import { validate } from '../middleware/validation.middleware';
@@ -69,6 +70,7 @@ router.get('/parse/jobs/:jobId', param('jobId').isString().notEmpty(), validate,
 router.post('/', createExpenseValidation, validate, createExpense);
 router.get('/', queryExpensesValidation, validate, getExpenses);
 router.get('/summary', getCategorySummary);
+router.get('/recurring', getRecurringExpenses);
 router.get('/suggest-category', query('description').notEmpty().isString(), validate, suggestCategoryForDescription);
 router.get('/export', query('format').isIn(['csv', 'pdf']), query('from').optional().isISO8601(), query('to').optional().isISO8601(), validate, exportExpenses);
 router.get('/:id', param('id').isUUID(), validate, getExpenseById);

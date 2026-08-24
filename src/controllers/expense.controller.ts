@@ -10,6 +10,7 @@ import { setCache, getCache, deleteCache, deleteCachePattern } from '../config/r
 import { AuthRequest } from '../middleware/auth.middleware';
 import { expenseParseQueue } from '../queues/expenseParse.queue';
 import { persistParsedExpenses } from '../services/expenseParse.service';
+import { detectRecurring } from '../services/recurring.service';
 
 // @desc    Parse raw text (optionally create)
 // @route   POST /api/expenses/parse
@@ -660,4 +661,36 @@ export const ocrReceipt = asyncHandler(async (req: AuthRequest, res: Response, n
     success: true,
     data: { text },
   });
+});
+
+// @desc    Detect recurring expenses (subscriptions, bills)
+// @route   GET /api/expenses/recurring
+// @access  Private (free tier analyzes its 3-month window with a lower bar)
+export const getRecurringExpenses = asyncHandler(async (req: AuthRequest, res: Response): Promise<void> => {
+  const userId = req.user!.id;
+  const isPremium = req.user!.isPremium;
+
+  const cacheKey = `recurring:${userId}`;
+  const cached = await getCache(cacheKey);
+  if (cached) {
+    res.json({ success: true, data: cached, cached: true });
+    return;
+  }
+
+  const windowMonths = isPremium ? 12 : 3;
+  const since = new Date();
+  since.setMonth(since.getMonth() - windowMonths);
+
+  const expenses = await prisma.expense.findMany({
+    where: { userId, date: { gte: since } },
+    select: { description: true, amount: true, currency: true, category: true, date: true },
+    orderBy: { date: 'desc' },
+    take: 2000,
+  });
+
+  const recurring = detectRecurring(expenses, isPremium ? 3 : 2);
+  const data = { recurring, windowMonths };
+
+  await setCache(cacheKey, data, 3600);
+  res.json({ success: true, data });
 });
