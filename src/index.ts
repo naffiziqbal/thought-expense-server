@@ -14,8 +14,12 @@ import expenseRoutes from "./routes/expense.routes";
 import insightRoutes from "./routes/insight.routes";
 import budgetRoutes from "./routes/budget.routes";
 import billingRoutes from "./routes/billing.routes";
+import assistantRoutes from "./routes/assistant.routes";
+import goalRoutes from "./routes/goal.routes";
 import { errorHandler } from "./middleware/error.middleware";
 import { startParseWorkers, stopParseWorkers } from "./workers/parse.worker";
+import { startBriefingWorker, stopBriefingWorker } from "./workers/briefing.worker";
+import { registerBriefingSchedule } from "./queues/briefing.queue";
 
 const app = express();
 const PORT = process.env.PORT || 7100;
@@ -31,14 +35,55 @@ app.use(
   })
 );
 
-// Rate limiting (production only)
+// Rate limiting (production only).
+// Keyed by the authenticated user (JWT subject) when present, falling back to
+// IP — mobile users behind carrier-grade NAT share IPs, so per-IP buckets
+// alone throttle innocent users. The JWT is not verified here (auth middleware
+// does that); it is only used as a bucketing key.
+const rateLimitKey = (req: Request): string => {
+  const auth = req.headers.authorization;
+  if (auth?.startsWith("Bearer ")) {
+    try {
+      const payload = JSON.parse(
+        Buffer.from(auth.split(" ")[1].split(".")[1], "base64url").toString("utf8")
+      );
+      if (payload?.id) return `user:${payload.id}`;
+    } catch {
+      // malformed token: fall through to IP
+    }
+  }
+  return `ip:${req.ip}`;
+};
+
 if (process.env.NODE_ENV === "production") {
-  const limiter = rateLimit({
-    windowMs: 15 * 60 * 1000, // 15 minutes
-    max: 100, // Limit each IP to 100 requests per windowMs
-    message: "Too many requests from this IP, please try again later.",
+  // General API traffic: generous — normal screens fire several requests each
+  const generalLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 600,
+    keyGenerator: rateLimitKey,
+    standardHeaders: true,
+    legacyHeaders: false,
+    validate: { trustProxy: false },
+    message: { success: false, message: "Too many requests. Please slow down and try again in a few minutes." },
   });
-  app.use("/api", limiter);
+
+  // Expensive AI endpoints (Gemini-backed): tighter budget per user
+  const aiLimiter = rateLimit({
+    windowMs: 5 * 60 * 1000,
+    max: 30,
+    keyGenerator: rateLimitKey,
+    standardHeaders: true,
+    legacyHeaders: false,
+    validate: { trustProxy: false },
+    message: { success: false, message: "You're going a bit fast for our AI. Please wait a few minutes and try again." },
+  });
+
+  app.use("/api/expenses/parse", aiLimiter);
+  app.use("/api/expenses/ocr", aiLimiter);
+  app.use("/api/assistant", aiLimiter);
+  app.use("/api/insights/generate", aiLimiter);
+  app.use("/api/insights/briefing/generate", aiLimiter);
+  app.use("/api", generalLimiter);
 }
 
 // Body parsing middleware
@@ -73,6 +118,8 @@ app.use("/api/expenses", expenseRoutes);
 app.use("/api/insights", insightRoutes);
 app.use("/api/budgets", budgetRoutes);
 app.use("/api/billing", billingRoutes);
+app.use("/api/assistant", assistantRoutes);
+app.use("/api/goals", goalRoutes);
 
 // 404 handler
 app.use("*", (_req: Request, res: Response) => {
@@ -100,6 +147,11 @@ const startServer = async (): Promise<void> => {
     startParseWorkers();
     console.log("✅ Parse workers started");
 
+    // Weekly financial briefing (worker + cron schedule)
+    startBriefingWorker();
+    await registerBriefingSchedule();
+    console.log("✅ Briefing worker + weekly schedule registered");
+
     // Start server
     app.listen(PORT, () => {
       console.log(`🚀 Server running on port ${PORT}`);
@@ -115,12 +167,12 @@ const startServer = async (): Promise<void> => {
 // Graceful shutdown
 process.on("SIGTERM", () => {
   console.log("SIGTERM signal received: closing HTTP server");
-  stopParseWorkers().finally(() => process.exit(0));
+  Promise.allSettled([stopParseWorkers(), stopBriefingWorker()]).finally(() => process.exit(0));
 });
 
 process.on("SIGINT", () => {
   console.log("SIGINT signal received: closing HTTP server");
-  stopParseWorkers().finally(() => process.exit(0));
+  Promise.allSettled([stopParseWorkers(), stopBriefingWorker()]).finally(() => process.exit(0));
 });
 
 startServer();

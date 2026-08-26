@@ -163,6 +163,72 @@ export const createExpense = asyncHandler(async (req: AuthRequest, res: Response
   });
 });
 
+// @desc    Create multiple expenses in one request (used after parse preview)
+// @route   POST /api/expenses/batch
+// @access  Private
+export const createExpensesBatch = asyncHandler(async (req: AuthRequest, res: Response, next: NextFunction) => {
+  const userId = req.user!.id;
+  const { expenses } = req.body as {
+    expenses: Array<{
+      description: string;
+      amount: number;
+      currency?: string;
+      category?: string;
+      date?: string;
+      rawInput?: string;
+    }>;
+  };
+
+  if (!Array.isArray(expenses) || expenses.length === 0) {
+    return next(new AppError('expenses must be a non-empty array', 400));
+  }
+  if (expenses.length > 50) {
+    return next(new AppError('Cannot create more than 50 expenses at once', 400));
+  }
+  for (const e of expenses) {
+    if (!e.description || e.amount == null || isNaN(parseFloat(String(e.amount)))) {
+      return next(new AppError('Each expense needs a description and a numeric amount', 400));
+    }
+  }
+
+  const created = await Promise.all(
+    expenses.map((e) =>
+      prisma.expense.create({
+        data: {
+          userId,
+          description: String(e.description).trim(),
+          amount: parseFloat(String(e.amount)),
+          currency: (e.currency || req.user!.currency || 'USD').toUpperCase(),
+          category: (e.category || 'Other').trim(),
+          confidence: 1.0,
+          rawInput: e.rawInput || `${e.description} ${e.amount}`,
+          date: e.date ? new Date(e.date) : new Date(),
+        },
+      })
+    )
+  );
+
+  // Embeddings are fire-and-forget, serialized to avoid hammering the embedding API
+  (async () => {
+    for (const expense of created) {
+      await storeExpenseEmbedding(expense).catch((err) => {
+        console.error('Failed to store embedding:', err);
+      });
+    }
+  })();
+
+  await deleteCachePattern(`expenses:${userId}:*`);
+  await deleteCachePattern(`summary:${userId}:*`);
+
+  const converted = await convertAmountsToCurrency(created, req.user!.currency || 'USD');
+
+  res.status(201).json({
+    success: true,
+    message: `Created ${created.length} expense(s)`,
+    data: { expenses: converted },
+  });
+});
+
 // @desc    Get user expenses with filters
 // @route   GET /api/expenses
 // @access  Private

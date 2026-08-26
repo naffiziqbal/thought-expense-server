@@ -30,8 +30,26 @@ model User {
   categoryMappings CategoryMapping[]
   budgets          Budget[]
   categoryBudgets  CategoryBudget[]
+  goals            Goal[]
 
   @@index([email])
+}
+
+model Goal {
+  id           String    @id @default(uuid())
+  userId       String
+  name         String
+  targetAmount Float
+  savedAmount  Float     @default(0)
+  currency     String    @default("USD")
+  deadline     DateTime?
+  status       String    @default("active") // active | completed | archived
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, status])
 }
 
 model Expense {
@@ -85,7 +103,7 @@ model CategoryMapping {
 model Insight {
   id        String   @id @default(uuid())
   userId    String
-  type      String   // 'weekly', 'monthly', 'trend'
+  type      String   // 'weekly', 'monthly', 'trend', 'briefing'
   content   String
   metadata  Json?    // Store structured data like percentages, categories
   period    DateTime // The period this insight is for

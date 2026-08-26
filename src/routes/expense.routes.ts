@@ -5,6 +5,7 @@ import {
   enqueueParseAndCreateExpenses,
   getExpenseParseJobStatus,
   createExpense,
+  createExpensesBatch,
   getExpenses,
   getExpenseById,
   updateExpense,
@@ -68,6 +69,7 @@ router.post('/ocr', receiptUpload.single('image'), ocrReceipt);
 router.post('/parse/async', parseExpensesValidation, validate, enqueueParseAndCreateExpenses);
 router.get('/parse/jobs/:jobId', param('jobId').isString().notEmpty(), validate, getExpenseParseJobStatus);
 router.post('/', createExpenseValidation, validate, createExpense);
+router.post('/batch', body('expenses').isArray({ min: 1, max: 50 }), validate, createExpensesBatch);
 router.get('/', queryExpensesValidation, validate, getExpenses);
 router.get('/summary', getCategorySummary);
 router.get('/recurring', getRecurringExpenses);

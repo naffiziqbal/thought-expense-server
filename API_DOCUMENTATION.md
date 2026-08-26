@@ -114,25 +114,27 @@ All errors follow a consistent structure:
 
 ### Limits
 
-- **Rate**: 100 requests per 15 minutes per IP address
-- **Scope**: Applied to all `/api/*` endpoints
-- **Header**: `X-RateLimit-Remaining` shows remaining requests
+Buckets are keyed by the **authenticated user** (JWT subject) when an Authorization header is present, falling back to IP for unauthenticated requests — so users sharing an IP (carrier-grade NAT, offices) don't share a budget. Production only.
+
+- **General**: 600 requests per 15 minutes — all `/api/*` endpoints
+- **AI endpoints**: 30 requests per 5 minutes — `/api/expenses/parse`, `/api/expenses/ocr`, `/api/assistant/*`, `/api/insights/generate`, `/api/insights/briefing/generate`
+- **Headers**: standard `RateLimit-*` headers (including `RateLimit-Remaining` and `Retry-After` on 429)
 
 ### Rate Limit Response
 
 ```json
 {
   "success": false,
-  "message": "Too many requests from this IP, please try again later."
+  "message": "Too many requests. Please slow down and try again in a few minutes."
 }
 ```
 
 ### Best Practices
 
+- Use `POST /api/expenses/batch` to create many expenses in one request instead of per-item POSTs
 - Cache responses when possible
 - Implement exponential backoff for retries
-- Monitor `X-RateLimit-Remaining` header
-- Contact support for higher limits (enterprise)
+- Monitor the `RateLimit-Remaining` header
 
 ---
 
@@ -482,6 +484,27 @@ curl -X POST http://localhost:7100/api/expenses/parse \
     "rawInput": "coffee 5\nrent 1200\nuber 15"
   }'
 ```
+
+---
+
+### 1b. Create Expenses in Batch
+
+Create up to 50 already-structured expenses in a single request (the clients use this after a `create: false` parse preview — one request instead of one per item).
+
+```http
+POST /api/expenses/batch
+```
+
+```json
+{
+  "expenses": [
+    { "description": "coffee", "amount": 5, "currency": "USD", "category": "Coffee Shop", "date": "2026-08-27" },
+    { "description": "uber", "amount": 15 }
+  ]
+}
+```
+
+Returns `201` with `data.expenses` (currency-converted). Missing `currency`/`category`/`date` default to the user's currency, `Other`, and now.
 
 ---
 
@@ -1002,6 +1025,65 @@ curl -X GET "http://localhost:7100/api/insights" \
 curl -X GET "http://localhost:7100/api/insights?type=weekly&limit=5" \
   -H "Authorization: Bearer YOUR_JWT_TOKEN"
 ```
+
+Free tier receives its latest 5 insights (any type); Premium gets full history and type filtering (`weekly`, `monthly`, `trend`, `briefing`).
+
+### Spending Intelligence
+
+```http
+GET /api/insights/intelligence
+```
+
+Statistical detection over the user's history (12 months Premium, 3 free), currency-normalized. Returns `monthlySeries` (per-month totals and category breakdown), `anomalies` (category spikes + unusually large transactions), `trends` (categories climbing for 3+ months), `waste` (recurring price creep, overlapping subscriptions, small-purchase leaks) and `recurring`. Cached 1 hour.
+
+### Weekly Briefing
+
+```http
+GET  /api/insights/briefing/latest      # most recent briefing insight (type 'briefing')
+POST /api/insights/briefing/generate    # generate now (no email)
+```
+
+Briefings are also generated automatically by the BullMQ scheduler (`BRIEFING_CRON`, default Mondays 08:00) for every user active in the last 30 days, and emailed via Resend.
+
+---
+
+## Assistant Endpoints (AI Advisor)
+
+All advisor endpoints ground the model in the user's real data: current/previous month summaries, budget, goals, detected intelligence, and (for `/ask`) semantically similar expenses from Pinecone. Free tier: **5 advisor requests per calendar month** across `ask`/`why`/`savings-plan` (search is not metered); a 403 with an upgrade message is returned when exhausted. Premium: unlimited.
+
+```http
+POST /api/assistant/ask
+Body: { "question": string, "history"?: [{ "role": "user"|"assistant", "content": string }] }
+→ data: { answer: string, followUps: string[], remainingFreeQuestions: number|null }
+
+POST /api/assistant/why
+→ same shape; answers "Why did I spend so much this month?" from month-over-month data
+
+POST /api/assistant/savings-plan
+Body: { "targetAmount": number }
+→ data: { plan: { feasible, targetAmount, currency, estimatedTotalSaving, summary,
+          steps: [{ category, action, estimatedMonthlySaving }] }, remainingFreeQuestions }
+
+GET /api/assistant/search?q=<natural language>
+→ data: { query, parsed, expenses: [{ id, description, amount, currency, category, date,
+          matchType: "semantic"|"keyword"|"both" }], total, totalAmount, currency }
+```
+
+Search combines AI query parsing (dates/category/amount filters), Pinecone semantic search, and keyword matching. Free tier searches its 3-month window.
+
+---
+
+## Goal Endpoints (Savings Goals)
+
+```http
+POST   /api/goals                    # { name, targetAmount, currency?, deadline? }
+GET    /api/goals                    # ?status=active|completed|archived
+PATCH  /api/goals/:id                # { name?, targetAmount?, deadline?, status? }
+POST   /api/goals/:id/contribute     # { amount } — negative removes savings
+DELETE /api/goals/:id
+```
+
+Goal responses include computed `progress` (0–1) and `remaining`. A contribution that reaches the target auto-completes the goal.
 
 ---
 

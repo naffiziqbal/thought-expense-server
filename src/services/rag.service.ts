@@ -115,15 +115,18 @@ export const storeExpenseEmbedding = async (expense: Expense): Promise<boolean> 
       currency: expense.currency
     });
 
-    // Store vector reference in database
-    await prisma.vector.create({
-      data: {
+    // Store vector reference in database (upsert: re-embeds happen on expense edits)
+    const vectorMetadata = {
+      embeddingModel: process.env.EMBEDDING_MODEL || 'embedding-001',
+      timestamp: new Date().toISOString()
+    };
+    await prisma.vector.upsert({
+      where: { expenseId: expense.id },
+      update: { metadata: vectorMetadata },
+      create: {
         expenseId: expense.id,
         vectorId: expense.id,
-        metadata: {
-          embeddingModel: 'text-embedding-3-small',
-          timestamp: new Date().toISOString()
-        }
+        metadata: vectorMetadata
       }
     });
 

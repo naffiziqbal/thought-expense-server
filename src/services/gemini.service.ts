@@ -28,7 +28,7 @@ async function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function generateWithRetryAndFallback<T>(
+export async function generateWithRetryAndFallback<T>(
   models: string[],
   fn: (model: string) => Promise<T>
 ): Promise<T> {
@@ -55,6 +55,48 @@ async function generateWithRetryAndFallback<T>(
   throw lastError;
 }
 const EMBEDDING_MODEL = process.env.EMBEDDING_MODEL || 'embedding-001';
+
+/**
+ * Run a text prompt against the insights model with retry + fallback.
+ * Shared by the advisor/briefing/search services.
+ */
+export const runInsightsModel = async (prompt: string): Promise<string> => {
+  const fallbacks = ['gemini-2.0-flash', 'gemini-1.5-flash', 'gemini-1.5-pro'];
+  const modelsToTry = [INSIGHTS_MODEL, ...fallbacks.filter((m) => m !== INSIGHTS_MODEL)];
+  return generateWithRetryAndFallback(modelsToTry, async (modelName) => {
+    const model = genAI.getGenerativeModel({ model: modelName });
+    const result = await model.generateContent(prompt);
+    return result.response.text();
+  });
+};
+
+/**
+ * Run a text prompt against the (fast) parsing model with retry + fallback.
+ */
+export const runParsingModel = async (prompt: string): Promise<string> => {
+  const modelsToTry = [PARSING_MODEL, ...PARSING_FALLBACK_MODELS.filter((m) => m !== PARSING_MODEL)];
+  return generateWithRetryAndFallback(modelsToTry, async (modelName) => {
+    const model = genAI.getGenerativeModel({ model: modelName });
+    const result = await model.generateContent(prompt);
+    return result.response.text();
+  });
+};
+
+/** Strip markdown fences and extract the first JSON object/array from a model reply. */
+export const extractJson = (raw: string): any => {
+  let text = raw.trim().replace(/```json\n?/g, '').replace(/```\n?/g, '');
+  const arrayMatch = text.match(/\[[\s\S]*\]/);
+  const objectMatch = text.match(/\{[\s\S]*\}/);
+  // Prefer whichever structure starts first in the reply
+  if (arrayMatch && objectMatch) {
+    text = text.indexOf(arrayMatch[0]) <= text.indexOf(objectMatch[0]) ? arrayMatch[0] : objectMatch[0];
+  } else if (arrayMatch) {
+    text = arrayMatch[0];
+  } else if (objectMatch) {
+    text = objectMatch[0];
+  }
+  return JSON.parse(text);
+};
 
 // System prompts
 const PARSING_SYSTEM_PROMPT = `You are an intelligent expense parsing assistant with access to the user's expense history. Your job is to extract structured expense information from natural language input and suggest the MOST SPECIFIC and ACCURATE category.
@@ -127,17 +169,17 @@ CRITICAL:
 - Be SPECIFIC with categories
 Be precise. Return ONLY valid JSON array with ALL expenses found.`;
 
-const INSIGHT_SYSTEM_PROMPT = `You are a financial insights assistant. Analyze expense data and provide helpful, non-judgmental observations.
+const INSIGHT_SYSTEM_PROMPT = `You are a personal financial advisor. Analyze the user's real expense data and tell them something genuinely useful about their money.
 
 RULES:
-1. Be informational, not prescriptive
-2. Focus on patterns and trends
-3. Keep insights short and actionable
-4. Maximum 3 insights per analysis
-5. Use percentages and comparisons
-6. No "you should" language
+1. Ground every insight in the actual numbers provided — quote amounts and percentages
+2. Point out what changed and WHY it likely changed (which purchases drove it)
+3. When you spot an opportunity to save, say so concretely ("Cutting X to twice a week saves ~Y/month")
+4. Maximum 3 insights per analysis, one sentence or two each
+5. Be honest but never judgmental or preachy
+6. Never invent numbers that are not derivable from the data
 
-TONE: Friendly, factual, helpful`;
+TONE: A sharp, friendly advisor who respects the user's time`;
 
 interface ParsedExpense {
   description: string;
@@ -408,14 +450,15 @@ export const generateEmbedding = async (text: string): Promise<number[]> => {
  */
 export const generateInsights = async (
   expenses: any[],
-  summary: ExpenseSummary
+  summary: ExpenseSummary,
+  comparisonContext?: string
 ): Promise<string[]> => {
   try {
     if (expenses.length === 0) {
       return ['No expenses to analyze yet. Start tracking to get insights!'];
     }
 
-    const expenseList = expenses.slice(0, 50).map(e => 
+    const expenseList = expenses.slice(0, 50).map(e =>
       `${e.description} (${e.category}): ${e.amount} ${e.currency}`
     ).join('\n');
 
@@ -428,9 +471,9 @@ SUMMARY:
 - Total spent: ${summary.totalSpent} ${summary.currency}
 - Top categories: ${summary.topCategories.join(', ')}
 - Category breakdown: ${JSON.stringify(summary.byCategory)}
-
-Generate 2-3 helpful, non-judgmental insights about spending patterns.
-Focus on trends, comparisons, and interesting observations.
+${comparisonContext ? `\nCOMPARISON WITH PREVIOUS PERIOD:\n${comparisonContext}\n` : ''}
+Generate 2-3 insights about this spending. Explain what changed and why,
+and include at least one concrete, realistic saving opportunity when the data supports it.
 
 Return as JSON array of strings:
 ["Insight 1", "Insight 2", "Insight 3"]`;
