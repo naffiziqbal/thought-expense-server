@@ -1,7 +1,14 @@
-import { GoogleGenerativeAI } from '@google/generative-ai';
+import { GoogleGenerativeAI, GenerativeModel } from '@google/generative-ai';
 import { findCategoryFromCatalog } from './categoryCatalog.service';
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || '');
+
+// Optional backup key used when the primary key is rate-limited or failing.
+// The backup key belongs to a newer Google AI project, where the older model
+// generations (2.5/2.0/1.5) are not served — it needs its own model list.
+const backupAI = process.env.GEMINI_API_KEY_BACKUP
+  ? new GoogleGenerativeAI(process.env.GEMINI_API_KEY_BACKUP)
+  : null;
 
 // Model configuration from environment variables
 const PARSING_MODEL = process.env.PARSING_MODEL || 'gemini-2.5-flash';
@@ -16,6 +23,11 @@ const PARSING_FALLBACK_MODELS = (
   .map((m) => m.trim())
   .filter(Boolean);
 
+const BACKUP_MODELS = (process.env.GEMINI_BACKUP_MODELS || 'gemini-3.6-flash,gemini-flash-latest')
+  .split(',')
+  .map((m) => m.trim())
+  .filter(Boolean);
+
 function isRetryableError(error: unknown): boolean {
   const msg = error instanceof Error ? error.message : String(error);
   return (
@@ -24,31 +36,66 @@ function isRetryableError(error: unknown): boolean {
   );
 }
 
+function isQuotaError(error: unknown): boolean {
+  const msg = error instanceof Error ? error.message : String(error);
+  return /429|quota|rate limit|RESOURCE_EXHAUSTED/i.test(msg);
+}
+
 async function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+interface GeminiAttempt {
+  client: GoogleGenerativeAI;
+  model: string;
+  label: 'primary' | 'backup';
+}
+
+/** Primary key with its model chain, then the backup key with its own chain. */
+function buildAttempts(primaryModels: string[]): GeminiAttempt[] {
+  const attempts: GeminiAttempt[] = primaryModels.map((model) => ({
+    client: genAI,
+    model,
+    label: 'primary',
+  }));
+  if (backupAI) {
+    for (const model of BACKUP_MODELS) {
+      attempts.push({ client: backupAI, model, label: 'backup' });
+    }
+  }
+  return attempts;
+}
+
 export async function generateWithRetryAndFallback<T>(
   models: string[],
-  fn: (model: string) => Promise<T>
+  fn: (model: GenerativeModel) => Promise<T>
 ): Promise<T> {
+  const attempts = buildAttempts(models);
   const maxRetries = 2;
   let lastError: unknown;
 
-  for (const model of models) {
+  for (let i = 0; i < attempts.length; i++) {
+    const { client, model, label } = attempts[i];
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       try {
-        return await fn(model);
+        return await fn(client.getGenerativeModel({ model }));
       } catch (err) {
         lastError = err;
+        if (isQuotaError(err)) {
+          // A quota/rate-limit error affects the key, not the model — skip the
+          // rest of this key's models and move straight to the next key.
+          console.warn(`Gemini ${label} key rate-limited on ${model}; switching key`);
+          while (i + 1 < attempts.length && attempts[i + 1].client === client) i++;
+          break;
+        }
         if (!isRetryableError(err) || attempt === maxRetries) break;
         const delay = (attempt + 1) * 1500;
-        console.warn(`Gemini ${model} attempt ${attempt + 1} failed, retrying in ${delay}ms...`, err);
+        console.warn(`Gemini ${label}/${model} attempt ${attempt + 1} failed, retrying in ${delay}ms...`, err);
         await sleep(delay);
       }
     }
-    if (models.indexOf(model) < models.length - 1) {
-      console.warn(`Switching to fallback model after ${model} failed`);
+    if (i < attempts.length - 1) {
+      console.warn(`Switching to ${attempts[i + 1].label}/${attempts[i + 1].model} after ${label}/${model} failed`);
     }
   }
 
@@ -63,8 +110,7 @@ const EMBEDDING_MODEL = process.env.EMBEDDING_MODEL || 'embedding-001';
 export const runInsightsModel = async (prompt: string): Promise<string> => {
   const fallbacks = ['gemini-2.0-flash', 'gemini-1.5-flash', 'gemini-1.5-pro'];
   const modelsToTry = [INSIGHTS_MODEL, ...fallbacks.filter((m) => m !== INSIGHTS_MODEL)];
-  return generateWithRetryAndFallback(modelsToTry, async (modelName) => {
-    const model = genAI.getGenerativeModel({ model: modelName });
+  return generateWithRetryAndFallback(modelsToTry, async (model) => {
     const result = await model.generateContent(prompt);
     return result.response.text();
   });
@@ -75,8 +121,7 @@ export const runInsightsModel = async (prompt: string): Promise<string> => {
  */
 export const runParsingModel = async (prompt: string): Promise<string> => {
   const modelsToTry = [PARSING_MODEL, ...PARSING_FALLBACK_MODELS.filter((m) => m !== PARSING_MODEL)];
-  return generateWithRetryAndFallback(modelsToTry, async (modelName) => {
-    const model = genAI.getGenerativeModel({ model: modelName });
+  return generateWithRetryAndFallback(modelsToTry, async (model) => {
     const result = await model.generateContent(prompt);
     return result.response.text();
   });
@@ -253,8 +298,7 @@ Return JSON array of expenses:`;
 
     const modelsToTry = [PARSING_MODEL, ...PARSING_FALLBACK_MODELS.filter((m) => m !== PARSING_MODEL)];
 
-    const responseText = await generateWithRetryAndFallback(modelsToTry, async (modelName) => {
-      const model = genAI.getGenerativeModel({ model: modelName });
+    const responseText = await generateWithRetryAndFallback(modelsToTry, async (model) => {
       const result = await model.generateContent(userPrompt);
       return result.response.text();
     });
@@ -337,8 +381,7 @@ Rules:
 
     const modelsToTry = [PARSING_MODEL, ...PARSING_FALLBACK_MODELS.filter((m) => m !== PARSING_MODEL)];
 
-    const rawText = await generateWithRetryAndFallback(modelsToTry, async (modelName) => {
-      const model = genAI.getGenerativeModel({ model: modelName });
+    const rawText = await generateWithRetryAndFallback(modelsToTry, async (model) => {
       const result = await model.generateContent(prompt);
       return result.response.text();
     });
@@ -405,8 +448,7 @@ Return JSON:
 
     const modelsToTry = [PARSING_MODEL, ...PARSING_FALLBACK_MODELS.filter((m) => m !== PARSING_MODEL)];
 
-    const rawText = await generateWithRetryAndFallback(modelsToTry, async (modelName) => {
-      const model = genAI.getGenerativeModel({ model: modelName });
+    const rawText = await generateWithRetryAndFallback(modelsToTry, async (model) => {
       const result = await model.generateContent(prompt);
       return result.response.text();
     });
@@ -433,16 +475,25 @@ Return JSON:
  * Uses full 3072-dimensional embeddings from gemini-embedding-001
  */
 export const generateEmbedding = async (text: string): Promise<number[]> => {
-  try {
-    const model = genAI.getGenerativeModel({ model: EMBEDDING_MODEL });
-    const result = await model.embedContent(text);
-    
-    // Return full 3072-dimensional embedding (Pinecone now supports this)
-    return result.embedding.values;
-  } catch (error: any) {
-    console.error('Embedding generation error:', error);
-    throw new Error(`Failed to generate embedding: ${error.message}`);
+  const clients: Array<{ client: GoogleGenerativeAI; label: string }> = [
+    { client: genAI, label: 'primary' },
+  ];
+  if (backupAI) clients.push({ client: backupAI, label: 'backup' });
+
+  let lastError: any;
+  for (const { client, label } of clients) {
+    try {
+      const model = client.getGenerativeModel({ model: EMBEDDING_MODEL });
+      const result = await model.embedContent(text);
+
+      // Return full 3072-dimensional embedding (Pinecone now supports this)
+      return result.embedding.values;
+    } catch (error: any) {
+      lastError = error;
+      console.error(`Embedding generation error (${label} key):`, error);
+    }
   }
+  throw new Error(`Failed to generate embedding: ${lastError?.message}`);
 };
 
 /**
@@ -481,8 +532,7 @@ Return as JSON array of strings:
     const insightFallbacks = ['gemini-2.0-flash', 'gemini-1.5-flash', 'gemini-1.5-pro'];
     const modelsToTry = [INSIGHTS_MODEL, ...insightFallbacks.filter((m) => m !== INSIGHTS_MODEL)];
 
-    const rawText = await generateWithRetryAndFallback(modelsToTry, async (modelName) => {
-      const model = genAI.getGenerativeModel({ model: modelName });
+    const rawText = await generateWithRetryAndFallback(modelsToTry, async (model) => {
       const result = await model.generateContent(prompt);
       return result.response.text();
     });
@@ -522,8 +572,7 @@ OUTPUT RULES:
 
   const modelsToTry = [PARSING_MODEL, ...PARSING_FALLBACK_MODELS.filter((m) => m !== PARSING_MODEL)];
 
-  const text = await generateWithRetryAndFallback(modelsToTry, async (modelName) => {
-    const model = genAI.getGenerativeModel({ model: modelName });
+  const text = await generateWithRetryAndFallback(modelsToTry, async (model) => {
     const result = await model.generateContent([
       { inlineData: { data: imageBase64, mimeType } },
       prompt,
