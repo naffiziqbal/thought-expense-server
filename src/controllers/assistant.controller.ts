@@ -11,6 +11,7 @@ import {
 } from '../services/advisor.service';
 import { findSimilarExpenses } from '../services/rag.service';
 import { searchExpenses } from '../services/search.service';
+import { logger } from '../config/logger';
 
 /** Free tier: 5 AI-advisor requests per calendar month. Premium: unlimited. */
 const FREE_MONTHLY_QUOTA = 5;
@@ -30,7 +31,7 @@ async function consumeQuota(userId: string, isPremium: boolean): Promise<number 
     return FREE_MONTHLY_QUOTA - used;
   } catch (err) {
     // Redis down: don't lock users out of the feature
-    console.error('Assistant quota check failed:', err);
+    logger.error({ err, userId }, 'Assistant quota check failed');
     return null;
   }
 }

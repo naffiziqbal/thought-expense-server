@@ -10,6 +10,7 @@ import prisma from '../config/prisma';
 import { runParsingModel, extractJson, generateEmbedding } from './gemini.service';
 import { querySimilarExpenses } from './pinecone.service';
 import { convertAmountsToCurrency } from './exchangeRate.service';
+import { logger } from '../config/logger';
 
 export interface ParsedSearchQuery {
   semanticQuery: string;
@@ -71,7 +72,7 @@ core thing being searched for, stripped of dates/amount qualifiers):
       maxAmount: parsed.maxAmount != null ? Number(parsed.maxAmount) : undefined,
     };
   } catch (err) {
-    console.warn('Search query parse failed, using raw query:', err);
+    logger.warn({ err }, 'Search query parse failed, using raw query');
     return { semanticQuery: query };
   }
 }
@@ -114,7 +115,7 @@ export async function searchExpenses(
       .map((m: any) => m.metadata?.expenseId || m.id)
       .filter(Boolean);
   } catch (err) {
-    console.warn('Semantic search unavailable, falling back to keyword only:', err);
+    logger.warn({ err }, 'Semantic search unavailable, falling back to keyword only');
   }
 
   // Signal B: keyword matches in Postgres

@@ -1,5 +1,6 @@
 import { GoogleGenerativeAI, GenerativeModel } from '@google/generative-ai';
 import { findCategoryFromCatalog } from './categoryCatalog.service';
+import { logger } from '../config/logger';
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || '');
 
@@ -84,18 +85,21 @@ export async function generateWithRetryAndFallback<T>(
         if (isQuotaError(err)) {
           // A quota/rate-limit error affects the key, not the model — skip the
           // rest of this key's models and move straight to the next key.
-          console.warn(`Gemini ${label} key rate-limited on ${model}; switching key`);
+          logger.warn({ label, model }, 'Gemini key rate-limited; switching key');
           while (i + 1 < attempts.length && attempts[i + 1].client === client) i++;
           break;
         }
         if (!isRetryableError(err) || attempt === maxRetries) break;
         const delay = (attempt + 1) * 1500;
-        console.warn(`Gemini ${label}/${model} attempt ${attempt + 1} failed, retrying in ${delay}ms...`, err);
+        logger.warn({ err, label, model, attempt: attempt + 1, delay }, 'Gemini attempt failed, retrying');
         await sleep(delay);
       }
     }
     if (i < attempts.length - 1) {
-      console.warn(`Switching to ${attempts[i + 1].label}/${attempts[i + 1].model} after ${label}/${model} failed`);
+      logger.warn(
+        { from: `${label}/${model}`, to: `${attempts[i + 1].label}/${attempts[i + 1].model}` },
+        'Switching Gemini model after failure'
+      );
     }
   }
 
@@ -338,7 +342,7 @@ Return JSON array of expenses:`;
     });
 
   } catch (error: any) {
-    console.error('Gemini parsing error:', error);
+    logger.error({ err: error }, 'Gemini parsing error');
     if (isRetryableError(error)) {
       throw new Error(
         'Our AI service is temporarily busy. Please try again in a moment.'
@@ -403,7 +407,7 @@ Rules:
       }))
       .filter((i) => i.category && !isNaN(i.limit) && i.limit > 0);
   } catch (error: any) {
-    console.error('parseCategoryBudgets error:', error);
+    logger.error({ err: error }, 'parseCategoryBudgets error');
     if (isRetryableError(error)) {
       throw new Error('Our AI is temporarily busy. Please try again in a moment.');
     }
@@ -461,7 +465,7 @@ Return JSON:
     return parsed;
 
   } catch (error: any) {
-    console.error('Category suggestion error:', error);
+    logger.error({ err: error }, 'Category suggestion error');
     return {
       category: 'Other',
       confidence: 0.5,
@@ -490,7 +494,7 @@ export const generateEmbedding = async (text: string): Promise<number[]> => {
       return result.embedding.values;
     } catch (error: any) {
       lastError = error;
-      console.error(`Embedding generation error (${label} key):`, error);
+      logger.error({ err: error, label }, 'Embedding generation error');
     }
   }
   throw new Error(`Failed to generate embedding: ${lastError?.message}`);
@@ -545,7 +549,7 @@ Return as JSON array of strings:
     return Array.isArray(insights) ? insights : [insights];
 
   } catch (error: any) {
-    console.error('Insight generation error:', error);
+    logger.error({ err: error }, 'Insight generation error');
     return ['Unable to generate insights at this time.'];
   }
 };

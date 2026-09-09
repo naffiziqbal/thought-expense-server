@@ -2,6 +2,7 @@ import { Response, NextFunction } from 'express';
 import prisma from '../config/prisma';
 import { asyncHandler, AppError } from '../middleware/error.middleware';
 import { AuthRequest } from '../middleware/auth.middleware';
+import { logger } from '../config/logger';
 
 /**
  * RevenueCat webhook -> keep User.isPremium/premiumUntil in sync with the
@@ -51,7 +52,7 @@ export const revenuecatWebhook = asyncHandler(async (req: AuthRequest, res: Resp
 
   if (!user) {
     // 200 so RevenueCat does not retry forever for users we cannot map
-    console.warn('RevenueCat webhook: no user for', candidateIds, 'event', event.type);
+    logger.warn({ candidateIds, eventType: event.type }, 'RevenueCat webhook: no matching user');
     res.json({ success: true, message: 'No matching user' });
     return;
   }

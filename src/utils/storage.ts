@@ -13,6 +13,7 @@ import {
   DeleteObjectCommand,
   HeadObjectCommand,
 } from '@aws-sdk/client-s3';
+import { logger } from '../config/logger';
 
 const BUCKET = process.env.SPACES_BUCKET || '';
 const REGION = process.env.SPACES_REGION || 'nyc3';
@@ -93,7 +94,7 @@ async function uploadToLocal(buffer: Buffer, objectKey: string): Promise<boolean
     await fs.writeFile(fullPath, buffer);
     return true;
   } catch (err) {
-    console.error('Local storage upload error:', err);
+    logger.error({ err }, 'Local storage upload error');
     return false;
   }
 }
@@ -108,7 +109,7 @@ async function deleteFromLocal(storedPath: string): Promise<boolean> {
     return true;
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
-      console.error('Local storage delete error:', err);
+      logger.error({ err }, 'Local storage delete error');
     }
     return true; // Ignore "file not found"
   }
@@ -145,7 +146,7 @@ export async function uploadToSpace(
       );
       return objectKey;
     } catch (err) {
-      console.error('Storage upload error:', err);
+      logger.error({ err }, 'Storage upload error');
       return null;
     }
   }
@@ -176,7 +177,7 @@ export async function deleteFromSpace(storedPath: string | null | undefined): Pr
       );
       return true;
     } catch (err) {
-      console.error('Storage delete error:', err);
+      logger.error({ err }, 'Storage delete error');
       return false;
     }
   }

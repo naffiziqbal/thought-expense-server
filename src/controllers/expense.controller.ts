@@ -11,6 +11,7 @@ import { AuthRequest } from '../middleware/auth.middleware';
 import { expenseParseQueue } from '../queues/expenseParse.queue';
 import { persistParsedExpenses } from '../services/expenseParse.service';
 import { detectRecurring } from '../services/recurring.service';
+import { logger } from '../config/logger';
 
 // @desc    Parse raw text (optionally create)
 // @route   POST /api/expenses/parse
@@ -148,7 +149,7 @@ export const createExpense = asyncHandler(async (req: AuthRequest, res: Response
   });
 
   storeExpenseEmbedding(expense).catch(err => {
-    console.error('Failed to store embedding:', err);
+    logger.error({ err, expenseId: expense.id }, 'Failed to store embedding');
   });
 
   await deleteCachePattern(`expenses:${userId}:*`);
@@ -212,7 +213,7 @@ export const createExpensesBatch = asyncHandler(async (req: AuthRequest, res: Re
   (async () => {
     for (const expense of created) {
       await storeExpenseEmbedding(expense).catch((err) => {
-        console.error('Failed to store embedding:', err);
+        logger.error({ err, expenseId: expense.id }, 'Failed to store embedding');
       });
     }
   })();
@@ -381,28 +382,31 @@ export const updateExpense = asyncHandler(async (req: AuthRequest, res: Response
 
   // If category was manually changed, teach RAG system
   if (categoryChanged) {
-    console.log(`Learning: "${expense.description}" changed from "${oldCategory}" → "${updated.category}"`);
+    logger.info(
+      { expenseId: expense.id, from: oldCategory, to: updated.category },
+      'Learning category correction'
+    );
     
     // Extract keywords from description for learning
     const keywords = expense.description.toLowerCase().split(/\s+/);
     for (const keyword of keywords) {
       if (keyword.length > 2) { // Skip very short words
         updateCategoryMapping(userId, keyword, updated.category).catch(err => {
-          console.error('Failed to update category mapping:', err);
+          logger.error({ err }, 'Failed to update category mapping');
         });
       }
     }
     
     // Also map the full description
     updateCategoryMapping(userId, expense.description, updated.category).catch(err => {
-      console.error('Failed to update category mapping:', err);
+      logger.error({ err }, 'Failed to update category mapping');
     });
   }
 
   // If description or category changed, update embedding
   if (updates.description || updates.category) {
     storeExpenseEmbedding(updated).catch(err => {
-      console.error('Failed to update embedding:', err);
+      logger.error({ err, expenseId: updated.id }, 'Failed to update embedding');
     });
   }
 
@@ -443,7 +447,7 @@ export const deleteExpense = asyncHandler(async (req: AuthRequest, res: Response
 
   // Delete from Pinecone
   deleteExpenseEmbedding(id).catch(err => {
-    console.error('Failed to delete embedding:', err);
+    logger.error({ err, expenseId: id }, 'Failed to delete embedding');
   });
 
   // Invalidate cache

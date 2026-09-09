@@ -16,6 +16,8 @@ import { queueConnection } from '../queues/queue.connection';
 import { parseCategoryBudgets, parseExpenses } from '../services/gemini.service';
 import { persistParsedExpenses } from '../services/expenseParse.service';
 import { getUserContext, updateCategoryMapping } from '../services/rag.service';
+import { logger } from '../config/logger';
+import * as Sentry from '@sentry/node';
 
 let expenseWorker: Worker<ExpenseParseJobData, ExpenseParseJobResult> | null = null;
 let categoryBudgetWorker: Worker<CategoryBudgetParseJobData, CategoryBudgetParseJobResult> | null = null;
@@ -45,7 +47,7 @@ export const startParseWorkers = () => {
         await Promise.all(
           parsedExpenses.map((expense) =>
             updateCategoryMapping(userId, expense.description, expense.category).catch((err) => {
-              console.error('Failed to update category mapping from parsed item:', err);
+              logger.error({ err }, 'Failed to update category mapping from parsed item');
             })
           )
         );
@@ -85,11 +87,13 @@ export const startParseWorkers = () => {
   }
 
   expenseWorker.on('failed', (job, error) => {
-    console.error(`Expense parse job ${job?.id} failed:`, error.message);
+    logger.error({ err: error, jobId: job?.id }, 'Expense parse job failed');
+    Sentry.captureException(error);
   });
 
   categoryBudgetWorker.on('failed', (job, error) => {
-    console.error(`Category budget parse job ${job?.id} failed:`, error.message);
+    logger.error({ err: error, jobId: job?.id }, 'Category budget parse job failed');
+    Sentry.captureException(error);
   });
 };
 

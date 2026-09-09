@@ -10,6 +10,7 @@ import prisma from '../config/prisma';
 import { asyncHandler } from '../middleware/error.middleware';
 import { AppError } from '../middleware/error.middleware';
 import { AuthRequest } from '../middleware/auth.middleware';
+import { logger } from '../config/logger';
 import {
   uploadToSpace,
   deleteFromSpace,
@@ -453,19 +454,19 @@ export const deleteAccount = asyncHandler(async (req: AuthRequest, res: Response
   try {
     await deleteUserVectors(userId);
   } catch (err) {
-    console.error('Pinecone cleanup failed during account deletion:', err);
+    logger.error({ err, userId }, 'Pinecone cleanup failed during account deletion');
   }
   if (user.profilePicture) {
     try {
       await deleteFromSpace(user.profilePicture);
     } catch (err) {
-      console.error('Avatar cleanup failed during account deletion:', err);
+      logger.error({ err, userId }, 'Avatar cleanup failed during account deletion');
     }
   }
   try {
     await deleteCachePattern(`*${userId}*`);
   } catch (err) {
-    console.error('Cache cleanup failed during account deletion:', err);
+    logger.error({ err, userId }, 'Cache cleanup failed during account deletion');
   }
 
   // Delete the user row; related rows cascade (expenses, vectors, budgets, insights, mappings)

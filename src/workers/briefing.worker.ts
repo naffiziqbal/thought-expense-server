@@ -8,6 +8,8 @@ import {
 } from '../queues/briefing.queue';
 import { queueConnection } from '../queues/queue.connection';
 import { generateWeeklyBriefingForUser, listBriefingRecipients } from '../services/briefing.service';
+import { logger } from '../config/logger';
+import * as Sentry from '@sentry/node';
 
 let briefingWorker: Worker<BriefingJobData> | null = null;
 
@@ -19,7 +21,7 @@ export const startBriefingWorker = (): void => {
     async (job: Job<BriefingJobData>) => {
       if (job.name === BRIEFING_DISPATCH_JOB) {
         const userIds = await listBriefingRecipients();
-        console.log(`Briefing dispatch: enqueueing ${userIds.length} user briefings`);
+        logger.info({ count: userIds.length }, 'Enqueueing user briefings');
         await briefingQueue.addBulk(
           userIds.map((userId) => ({ name: BRIEFING_USER_JOB, data: { userId } }))
         );
@@ -36,7 +38,8 @@ export const startBriefingWorker = (): void => {
   );
 
   briefingWorker.on('failed', (job, error) => {
-    console.error(`Briefing job ${job?.id} (${job?.name}) failed:`, error.message);
+    logger.error({ err: error, jobId: job?.id, jobName: job?.name }, 'Briefing job failed');
+    Sentry.captureException(error);
   });
 };
 

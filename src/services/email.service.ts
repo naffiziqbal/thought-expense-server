@@ -1,4 +1,5 @@
 import { Resend } from 'resend';
+import { logger } from '../config/logger';
 
 // Lazy: the Resend constructor throws on an empty key, which would crash the
 // server at boot in environments where email is not configured.
@@ -20,7 +21,7 @@ export async function sendForgotPasswordEmail(
 ): Promise<{ success: boolean; error?: string }> {
   try {
     if (!process.env.RESEND_API_KEY) {
-      console.error('RESEND_API_KEY is not set');
+      logger.error('RESEND_API_KEY is not set');
       return { success: false, error: 'Email service not configured' };
     }
 
@@ -52,13 +53,13 @@ export async function sendForgotPasswordEmail(
     });
 
     if (error) {
-      console.error('Resend error:', error);
+      logger.error({ err: error }, 'Resend error');
       return { success: false, error: error.message };
     }
 
     return { success: true };
   } catch (err) {
-    console.error('Failed to send forgot password email:', err);
+    logger.error({ err }, 'Failed to send forgot password email');
     return {
       success: false,
       error: err instanceof Error ? err.message : 'Failed to send email',
@@ -89,7 +90,7 @@ export async function sendWeeklyBriefingEmail(
 ): Promise<{ success: boolean; error?: string }> {
   try {
     if (!process.env.RESEND_API_KEY) {
-      console.error('RESEND_API_KEY is not set');
+      logger.error('RESEND_API_KEY is not set');
       return { success: false, error: 'Email service not configured' };
     }
 
@@ -146,13 +147,13 @@ export async function sendWeeklyBriefingEmail(
     });
 
     if (error) {
-      console.error('Resend error:', error);
+      logger.error({ err: error }, 'Resend error');
       return { success: false, error: error.message };
     }
 
     return { success: true };
   } catch (err) {
-    console.error('Failed to send weekly briefing email:', err);
+    logger.error({ err }, 'Failed to send weekly briefing email');
     return {
       success: false,
       error: err instanceof Error ? err.message : 'Failed to send email',
@@ -169,7 +170,7 @@ export async function sendPasswordResetOtpEmail(
 ): Promise<{ success: boolean; error?: string }> {
   try {
     if (!process.env.RESEND_API_KEY) {
-      console.error('RESEND_API_KEY is not set');
+      logger.error('RESEND_API_KEY is not set');
       return { success: false, error: 'Email service not configured' };
     }
 
@@ -198,13 +199,13 @@ export async function sendPasswordResetOtpEmail(
     });
 
     if (error) {
-      console.error('Resend error:', error);
+      logger.error({ err: error }, 'Resend error');
       return { success: false, error: error.message };
     }
 
     return { success: true };
   } catch (err) {
-    console.error('Failed to send OTP email:', err);
+    logger.error({ err }, 'Failed to send OTP email');
     return {
       success: false,
       error: err instanceof Error ? err.message : 'Failed to send email',

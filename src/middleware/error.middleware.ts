@@ -1,4 +1,5 @@
 import { Request, Response, NextFunction } from 'express';
+import { logger } from '../config/logger';
 
 export class AppError extends Error {
   statusCode: number;
@@ -16,10 +17,7 @@ export const errorHandler = (err: any, req: Request, res: Response, next: NextFu
   let error = { ...err };
   error.message = err.message;
 
-  // Log error for debugging
-  if (process.env.NODE_ENV === 'development') {
-    console.error('Error:', err);
-  }
+  logger.error({ err, method: req.method, url: req.originalUrl }, err.message || 'Unhandled error');
 
   // Prisma errors
   if (err.code === 'P2002') {

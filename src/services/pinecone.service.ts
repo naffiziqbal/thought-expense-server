@@ -1,4 +1,5 @@
 import { Pinecone, Index } from '@pinecone-database/pinecone';
+import { logger } from '../config/logger';
 
 let pinecone: Pinecone | null = null;
 let index: Index | null = null;
@@ -28,10 +29,10 @@ export const initPinecone = async (): Promise<Pinecone> => {
     const indexName = process.env.PINECONE_INDEX_NAME || 'thoughtexpense-embeddings';
     index = pinecone.index(indexName);
 
-    console.log('✅ Pinecone initialized');
+    logger.info({ indexName }, 'Pinecone initialized');
     return pinecone;
   } catch (error) {
-    console.error('❌ Pinecone initialization failed:', error);
+    logger.error({ err: error }, 'Pinecone initialization failed');
     throw error;
   }
 };
@@ -71,7 +72,7 @@ export const upsertExpenseVector = async (
 
     return true;
   } catch (error) {
-    console.error('Pinecone upsert error:', error);
+    logger.error({ err: error }, 'Pinecone upsert error');
     throw error;
   }
 };
@@ -96,7 +97,7 @@ export const querySimilarExpenses = async (
 
     return results.matches || [];
   } catch (error) {
-    console.error('Pinecone query error:', error);
+    logger.error({ err: error }, 'Pinecone query error');
     throw error;
   }
 };
@@ -110,7 +111,7 @@ export const deleteExpenseVector = async (expenseId: string): Promise<boolean> =
     await idx.deleteOne(expenseId);
     return true;
   } catch (error) {
-    console.error('Pinecone delete error:', error);
+    logger.error({ err: error }, 'Pinecone delete error');
     throw error;
   }
 };
@@ -124,7 +125,7 @@ export const deleteUserVectors = async (userId: string): Promise<boolean> => {
     await idx.deleteMany({ userId });
     return true;
   } catch (error) {
-    console.error('Pinecone delete user vectors error:', error);
+    logger.error({ err: error, userId }, 'Pinecone delete user vectors error');
     throw error;
   }
 };

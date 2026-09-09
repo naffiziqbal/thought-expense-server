@@ -2,6 +2,7 @@ import prisma from '../config/prisma';
 import { deleteCachePattern } from '../config/redis';
 import { convertAmountsToCurrency } from './exchangeRate.service';
 import { storeExpenseEmbedding } from './rag.service';
+import { logger } from '../config/logger';
 
 interface ParsedExpenseInput {
   description: string;
@@ -35,7 +36,7 @@ export const persistParsedExpenses = async (
       });
 
       storeExpenseEmbedding(created).catch((err) => {
-        console.error('Failed to store embedding:', err);
+        logger.error({ err, expenseId: created.id }, 'Failed to store embedding');
       });
 
       return created;

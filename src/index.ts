@@ -1,13 +1,14 @@
-import "dotenv/config";
+import "./instrument";
 import path from "path";
 import express, { Request, Response } from "express";
 import cors from "cors";
 import helmet from "helmet";
 import compression from "compression";
-import morgan from "morgan";
 import rateLimit from "express-rate-limit";
+import * as Sentry from "@sentry/node";
 
 import { connectRedis } from "./config/redis";
+import { httpLogger, logger } from "./config/logger";
 import { initPinecone } from "./services/pinecone.service";
 import authRoutes from "./routes/auth.routes";
 import expenseRoutes from "./routes/expense.routes";
@@ -93,12 +94,7 @@ app.use(express.urlencoded({ extended: true, limit: "10mb" }));
 // Compression middleware
 app.use(compression());
 
-// Logging middleware
-if (process.env.NODE_ENV === "development") {
-  app.use(morgan("dev"));
-} else {
-  app.use(morgan("combined"));
-}
+app.use(httpLogger);
 
 // Serve uploaded files (local storage fallback when Spaces not configured)
 app.use("/uploads", express.static(path.join(process.cwd(), "uploads")));
@@ -111,6 +107,16 @@ app.get("/health", (_req: Request, res: Response) => {
     uptime: process.uptime(),
   });
 });
+
+if (process.env.NODE_ENV !== "production") {
+  app.get("/debug-sentry", () => {
+    Sentry.logger.info("User triggered test error", {
+      action: "test_error_endpoint",
+    });
+    Sentry.metrics.count("test_counter", 1);
+    throw new Error("My first Sentry error!");
+  });
+}
 
 // API Routes
 app.use("/api/auth", authRoutes);
@@ -129,7 +135,16 @@ app.use("*", (_req: Request, res: Response) => {
   });
 });
 
-// Error handling middleware (must be last)
+Sentry.setupExpressErrorHandler(app, {
+  shouldHandleError(error) {
+    const status =
+      typeof error === "object" && error && "statusCode" in error
+        ? Number((error as { statusCode?: number }).statusCode)
+        : undefined;
+    return status == null || status >= 500;
+  },
+});
+
 app.use(errorHandler);
 
 // Initialize connections and start server
@@ -137,41 +152,44 @@ const startServer = async (): Promise<void> => {
   try {
     // Connect to Redis
     await connectRedis();
-    console.log("✅ Redis connected");
+    logger.info("Redis connected");
 
     // Initialize Pinecone
     await initPinecone();
-    console.log("✅ Pinecone initialized");
+    logger.info("Pinecone initialized");
 
     // Start background workers
     startParseWorkers();
-    console.log("✅ Parse workers started");
+    logger.info("Parse workers started");
 
     // Weekly financial briefing (worker + cron schedule)
     startBriefingWorker();
     await registerBriefingSchedule();
-    console.log("✅ Briefing worker + weekly schedule registered");
+    logger.info("Briefing worker and weekly schedule registered");
 
     // Start server
     app.listen(PORT, () => {
-      console.log(`🚀 Server running on port ${PORT}`);
-      console.log(`📝 Environment: ${process.env.NODE_ENV || "development"}`);
-      console.log(`🔗 Health check: http://localhost:${PORT}/health`);
+      logger.info(
+        { port: PORT, env: process.env.NODE_ENV || "development" },
+        "Server running"
+      );
     });
   } catch (error) {
-    console.error("❌ Failed to start server:", error);
+    logger.fatal({ err: error }, "Failed to start server");
+    Sentry.captureException(error);
+    await Sentry.flush(2000);
     process.exit(1);
   }
 };
 
 // Graceful shutdown
 process.on("SIGTERM", () => {
-  console.log("SIGTERM signal received: closing HTTP server");
+  logger.info("SIGTERM received, closing HTTP server");
   Promise.allSettled([stopParseWorkers(), stopBriefingWorker()]).finally(() => process.exit(0));
 });
 
 process.on("SIGINT", () => {
-  console.log("SIGINT signal received: closing HTTP server");
+  logger.info("SIGINT received, closing HTTP server");
   Promise.allSettled([stopParseWorkers(), stopBriefingWorker()]).finally(() => process.exit(0));
 });
 

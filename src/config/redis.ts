@@ -1,4 +1,5 @@
 import { createClient, RedisClientType } from 'redis';
+import { logger } from './logger';
 
 let redisClient: RedisClientType | null = null;
 
@@ -9,7 +10,7 @@ export const connectRedis = async (): Promise<RedisClientType> => {
       socket: {
         reconnectStrategy: (retries: number) => {
           if (retries > 10) {
-            console.error('Redis: Max reconnection attempts reached');
+            logger.error('Redis: max reconnection attempts reached');
             return new Error('Redis reconnection failed');
           }
           return retries * 100; // Exponential backoff
@@ -18,21 +19,21 @@ export const connectRedis = async (): Promise<RedisClientType> => {
     });
 
     redisClient.on('error', (err: Error) => {
-      console.error('Redis Client Error:', err);
+      logger.error({ err }, 'Redis client error');
     });
 
     redisClient.on('connect', () => {
-      console.log('Redis: Connected');
+      logger.info('Redis connected');
     });
 
     redisClient.on('reconnecting', () => {
-      console.log('Redis: Reconnecting...');
+      logger.warn('Redis reconnecting');
     });
 
     await redisClient.connect();
     return redisClient;
   } catch (error) {
-    console.error('Redis connection error:', error);
+    logger.error({ err: error }, 'Redis connection error');
     throw error;
   }
 };
@@ -50,7 +51,7 @@ export const setCache = async (key: string, value: any, ttl: number = 3600): Pro
     const client = getRedisClient();
     await client.setEx(key, ttl, JSON.stringify(value));
   } catch (error) {
-    console.error('Redis setCache error:', error);
+    logger.error({ err: error }, 'Redis setCache error');
   }
 };
 
@@ -60,7 +61,7 @@ export const getCache = async <T = any>(key: string): Promise<T | null> => {
     const data = await client.get(key);
     return data ? JSON.parse(data) : null;
   } catch (error) {
-    console.error('Redis getCache error:', error);
+    logger.error({ err: error }, 'Redis getCache error');
     return null;
   }
 };
@@ -70,7 +71,7 @@ export const deleteCache = async (key: string): Promise<void> => {
     const client = getRedisClient();
     await client.del(key);
   } catch (error) {
-    console.error('Redis deleteCache error:', error);
+    logger.error({ err: error }, 'Redis deleteCache error');
   }
 };
 
@@ -82,6 +83,6 @@ export const deleteCachePattern = async (pattern: string): Promise<void> => {
       await client.del(keys);
     }
   } catch (error) {
-    console.error('Redis deleteCachePattern error:', error);
+    logger.error({ err: error }, 'Redis deleteCachePattern error');
   }
 };

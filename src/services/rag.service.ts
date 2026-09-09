@@ -1,6 +1,7 @@
 import prisma from '../config/prisma';
 import { generateEmbedding } from './gemini.service';
 import { upsertExpenseVector, querySimilarExpenses, deleteExpenseVector } from './pinecone.service';
+import { logger } from '../config/logger';
 
 interface UserContextItem {
   keyword: string;
@@ -52,7 +53,7 @@ export const getUserContext = async (userId: string): Promise<UserContextItem[]>
       confidence: m.confidence
     }));
   } catch (error) {
-    console.error('Error fetching user context:', error);
+    logger.error({ err: error }, 'Error fetching user context');
     return [];
   }
 };
@@ -92,7 +93,7 @@ export const updateCategoryMapping = async (
 
     return mapping;
   } catch (error) {
-    console.error('Error updating category mapping:', error);
+    logger.error({ err: error }, 'Error updating category mapping');
     throw error;
   }
 };
@@ -132,7 +133,7 @@ export const storeExpenseEmbedding = async (expense: Expense): Promise<boolean> 
 
     return true;
   } catch (error) {
-    console.error('Error storing expense embedding:', error);
+    logger.error({ err: error }, 'Error storing expense embedding');
     return false;
   }
 };
@@ -182,7 +183,7 @@ export const findSimilarExpenses = async (
       };
     });
   } catch (error) {
-    console.error('Error finding similar expenses:', error);
+    logger.error({ err: error }, 'Error finding similar expenses');
     return [];
   }
 };
@@ -221,7 +222,7 @@ export const suggestCategory = async (
       confidence: Math.min(confidence, 0.95)
     };
   } catch (error) {
-    console.error('Error suggesting category:', error);
+    logger.error({ err: error }, 'Error suggesting category');
     return null;
   }
 };
@@ -239,7 +240,7 @@ export const deleteExpenseEmbedding = async (expenseId: string): Promise<boolean
 
     return true;
   } catch (error) {
-    console.error('Error deleting expense embedding:', error);
+    logger.error({ err: error }, 'Error deleting expense embedding');
     return false;
   }
 };

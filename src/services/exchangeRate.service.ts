@@ -4,6 +4,7 @@
  */
 
 import { getCache, setCache } from '../config/redis';
+import { logger } from '../config/logger';
 
 const CACHE_KEY_PREFIX = 'exchange_rates:';
 const CACHE_TTL = 3600; // 1 hour
@@ -25,7 +26,7 @@ async function fetchRatesFromApi(baseCurrency: string): Promise<Record<string, n
     }
     return null;
   } catch (err) {
-    console.error('Exchange rate API error:', err);
+    logger.error({ err }, 'Exchange rate API error');
     return null;
   }
 }
@@ -71,7 +72,7 @@ export async function convertAmount(
       return amount / fromRate;
     }
     // Fallback: no conversion possible, return original
-    console.warn(`No exchange rate for ${from} -> ${to}, returning original amount`);
+    logger.warn({ from, to }, 'No exchange rate, returning original amount');
     return amount;
   }
 
