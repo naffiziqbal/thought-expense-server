@@ -108,13 +108,14 @@ export const storeExpenseEmbedding = async (expense: Expense): Promise<boolean> 
     const embedding = await generateEmbedding(text);
 
     // Upsert to Pinecone
-    await upsertExpenseVector(expense.id, embedding, {
+    const upserted = await upsertExpenseVector(expense.id, embedding, {
       userId: expense.userId,
       description: expense.description,
       category: expense.category,
       amount: expense.amount,
       currency: expense.currency
     });
+    if (!upserted) return false;
 
     // Store vector reference in database (upsert: re-embeds happen on expense edits)
     const vectorMetadata = {

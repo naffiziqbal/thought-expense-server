@@ -20,9 +20,9 @@ export const persistParsedExpenses = async (
   rawInput: string,
   userCurrency: string
 ) => {
-  const createdExpenses = await Promise.all(
-    parsedExpenses.map(async (expense) => {
-      const created = await prisma.expense.create({
+  const createdExpenses = await prisma.$transaction(
+    parsedExpenses.map((expense) =>
+      prisma.expense.create({
         data: {
           userId,
           description: expense.description,
@@ -33,15 +33,15 @@ export const persistParsedExpenses = async (
           rawInput: expense.rawInput || rawInput,
           date: new Date(expense.date),
         },
-      });
-
-      storeExpenseEmbedding(created).catch((err) => {
-        logger.error({ err, expenseId: created.id }, 'Failed to store embedding');
-      });
-
-      return created;
-    })
+      })
+    )
   );
+
+  for (const created of createdExpenses) {
+    storeExpenseEmbedding(created).catch((err) => {
+      logger.error({ err, expenseId: created.id }, 'Failed to store embedding');
+    });
+  }
 
   await deleteCachePattern(`expenses:${userId}:*`);
   await deleteCachePattern(`summary:${userId}:*`);

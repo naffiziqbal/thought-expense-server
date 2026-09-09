@@ -13,6 +13,18 @@ import { deleteCachePattern } from '../config/redis';
 
 const round2 = (n: number): number => Math.round(n * 100) / 100;
 
+/** Monday 00:00 UTC of the ISO week containing `d`. */
+function startOfUtcIsoWeek(d: Date): Date {
+  const date = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+  const day = date.getUTCDay() || 7;
+  date.setUTCDate(date.getUTCDate() - day + 1);
+  return date;
+}
+
+export function utcIsoWeekKey(d: Date = new Date()): string {
+  return startOfUtcIsoWeek(d).toISOString().slice(0, 10);
+}
+
 async function weekTotals(
   userId: string,
   currency: string,
@@ -65,6 +77,44 @@ export async function generateWeeklyBriefingForUser(
     return { generated: false, reason: 'No activity in the last two weeks' };
   }
 
+  const weekStart = startOfUtcIsoWeek(now);
+  const existing = await prisma.insight.findFirst({
+    where: { userId, type: 'briefing', createdAt: { gte: weekStart } },
+    orderBy: { createdAt: 'desc' },
+  });
+
+  if (existing) {
+    const meta = (existing.metadata || {}) as Record<string, unknown>;
+    let emailed = Boolean(meta.emailed);
+    if (options.sendEmail !== false && !emailed) {
+      const stored = meta.briefing as BriefingContent | undefined;
+      if (stored) {
+        const result = await sendWeeklyBriefingEmail(user.email, {
+          name: user.name,
+          briefing: stored,
+          weekTotal: thisWeek.total,
+          previousWeekTotal: lastWeek.total,
+          currency,
+          isPremium: user.isPremium,
+        });
+        emailed = result.success;
+        if (emailed) {
+          await prisma.insight.update({
+            where: { id: existing.id },
+            data: { metadata: { ...meta, emailed: true } },
+          });
+        }
+      }
+    }
+    return {
+      generated: true,
+      briefing: (meta.briefing as BriefingContent) || undefined,
+      insightId: existing.id,
+      emailed,
+      reason: 'already generated this week',
+    };
+  }
+
   const ctx = await buildAdvisorContext(userId, currency, user.isPremium);
   const briefing = await generateBriefingContent(ctx, thisWeek.total, lastWeek.total, thisWeek.byCategory);
 
@@ -80,6 +130,7 @@ export async function generateWeeklyBriefingForUser(
         byCategory: thisWeek.byCategory,
         currency,
         period: { start: weekAgo.toISOString(), end: now.toISOString() },
+        emailed: false,
       },
       period: now,
     },
@@ -98,6 +149,22 @@ export async function generateWeeklyBriefingForUser(
       isPremium: user.isPremium,
     });
     emailed = result.success;
+    if (emailed) {
+      await prisma.insight.update({
+        where: { id: insight.id },
+        data: {
+          metadata: {
+            briefing: briefing as any,
+            weekTotal: thisWeek.total,
+            previousWeekTotal: lastWeek.total,
+            byCategory: thisWeek.byCategory,
+            currency,
+            period: { start: weekAgo.toISOString(), end: now.toISOString() },
+            emailed: true,
+          },
+        },
+      });
+    }
   }
 
   return { generated: true, briefing, insightId: insight.id, emailed };

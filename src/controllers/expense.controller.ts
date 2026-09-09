@@ -12,6 +12,7 @@ import { expenseParseQueue } from '../queues/expenseParse.queue';
 import { persistParsedExpenses } from '../services/expenseParse.service';
 import { detectRecurring } from '../services/recurring.service';
 import { logger } from '../config/logger';
+import { idempotencyKeyFromRequest, withIdempotency } from '../services/idempotency.service';
 
 // @desc    Parse raw text (optionally create)
 // @route   POST /api/expenses/parse
@@ -19,37 +20,47 @@ import { logger } from '../config/logger';
 export const parseAndCreateExpenses = asyncHandler(async (req: AuthRequest, res: Response, next: NextFunction) => {
   const { rawInput, create = true } = req.body;
   const userId = req.user!.id;
+  const idempotencyKey = idempotencyKeyFromRequest(req.headers['idempotency-key']);
 
-  // Get user context for better classification
-  const userContext = await getUserContext(userId);
+  const payload = await withIdempotency(
+    'expenses-parse',
+    userId,
+    idempotencyKey,
+    async () => {
+      const userContext = await getUserContext(userId);
+      const parsedExpenses = await parseExpenses(rawInput, req.user!.currency, userContext);
 
-  // Parse expenses using AI
-  const parsedExpenses = await parseExpenses(rawInput, req.user!.currency, userContext);
+      if (!parsedExpenses || parsedExpenses.length === 0) {
+        throw new AppError('Could not parse any expenses from input', 400);
+      }
 
-  if (!parsedExpenses || parsedExpenses.length === 0) {
-    return next(new AppError('Could not parse any expenses from input', 400));
-  }
+      if (create === false) {
+        return {
+          httpStatus: 200,
+          body: {
+            success: true,
+            message: `Parsed ${parsedExpenses.length} expense(s)`,
+            data: { expenses: parsedExpenses },
+          },
+        };
+      }
 
-  // Parse-only: return without creating
-  if (create === false) {
-    res.json({
-      success: true,
-      message: `Parsed ${parsedExpenses.length} expense(s)`,
-      data: { expenses: parsedExpenses }
-    });
-    return;
-  }
-
-  const persisted = await persistParsedExpenses(userId, parsedExpenses, rawInput, req.user!.currency || 'USD');
-
-  res.status(201).json({
-    success: true,
-    message: `Successfully parsed ${persisted.expenses.length} expense(s)`,
-    data: {
-      expenses: persisted.expenses,
-      needsReview: persisted.needsReview
+      const persisted = await persistParsedExpenses(userId, parsedExpenses, rawInput, req.user!.currency || 'USD');
+      return {
+        httpStatus: 201,
+        body: {
+          success: true,
+          message: `Successfully parsed ${persisted.expenses.length} expense(s)`,
+          data: {
+            expenses: persisted.expenses,
+            needsReview: persisted.needsReview,
+          },
+        },
+      };
     }
-  });
+  );
+
+  res.status(payload.httpStatus).json(payload.body);
 });
 
 // @desc    Enqueue expense parsing/creation job
@@ -58,19 +69,48 @@ export const parseAndCreateExpenses = asyncHandler(async (req: AuthRequest, res:
 export const enqueueParseAndCreateExpenses = asyncHandler(async (req: AuthRequest, res: Response) => {
   const { rawInput, create = true } = req.body as { rawInput: string; create?: boolean };
   const userId = req.user!.id;
+  const idempotencyKey = idempotencyKeyFromRequest(req.headers['idempotency-key']);
 
-  const job = await expenseParseQueue.add('parse-expense', {
+  const payload = await withIdempotency(
+    'expenses-parse-async',
     userId,
-    rawInput,
-    create: create !== false,
-    userCurrency: req.user!.currency || 'USD',
-  });
+    idempotencyKey,
+    async () => {
+      const jobId = req.body.clientBatchId
+        ? `parse-${userId}-${String(req.body.clientBatchId).slice(0, 80)}`
+        : undefined;
+      let job;
+      try {
+        job = await expenseParseQueue.add(
+          'parse-expense',
+          {
+            userId,
+            rawInput,
+            create: create !== false,
+            userCurrency: req.user!.currency || 'USD',
+            localPreview: Array.isArray(req.body.localPreview) ? req.body.localPreview : undefined,
+            clientBatchId: typeof req.body.clientBatchId === 'string' ? req.body.clientBatchId : undefined,
+          },
+          jobId ? { jobId } : undefined
+        );
+      } catch (err) {
+        if (jobId) {
+          job = await expenseParseQueue.getJob(jobId);
+        }
+        if (!job) throw err;
+      }
+      return {
+        httpStatus: 202,
+        body: {
+          success: true,
+          message: 'Expense parsing started',
+          data: { jobId: job.id },
+        },
+      };
+    }
+  );
 
-  res.status(202).json({
-    success: true,
-    message: 'Expense parsing started',
-    data: { jobId: job.id },
-  });
+  res.status(payload.httpStatus).json(payload.body);
 });
 
 // @desc    Get parse job status
@@ -192,41 +232,48 @@ export const createExpensesBatch = asyncHandler(async (req: AuthRequest, res: Re
     }
   }
 
-  const created = await Promise.all(
-    expenses.map((e) =>
-      prisma.expense.create({
-        data: {
-          userId,
-          description: String(e.description).trim(),
-          amount: parseFloat(String(e.amount)),
-          currency: (e.currency || req.user!.currency || 'USD').toUpperCase(),
-          category: (e.category || 'Other').trim(),
-          confidence: 1.0,
-          rawInput: e.rawInput || `${e.description} ${e.amount}`,
-          date: e.date ? new Date(e.date) : new Date(),
-        },
-      })
-    )
-  );
+  const created = await withIdempotency(
+    'expenses-batch',
+    userId,
+    idempotencyKeyFromRequest(req.headers['idempotency-key']),
+    async () => {
+      const rows = await prisma.$transaction(
+        expenses.map((e) =>
+          prisma.expense.create({
+            data: {
+              userId,
+              description: String(e.description).trim(),
+              amount: parseFloat(String(e.amount)),
+              currency: (e.currency || req.user!.currency || 'USD').toUpperCase(),
+              category: (e.category || 'Other').trim(),
+              confidence: 1.0,
+              rawInput: e.rawInput || `${e.description} ${e.amount}`,
+              date: e.date ? new Date(e.date) : new Date(),
+            },
+          })
+        )
+      );
 
-  // Embeddings are fire-and-forget, serialized to avoid hammering the embedding API
-  (async () => {
-    for (const expense of created) {
-      await storeExpenseEmbedding(expense).catch((err) => {
-        logger.error({ err, expenseId: expense.id }, 'Failed to store embedding');
-      });
+      (async () => {
+        for (const expense of rows) {
+          await storeExpenseEmbedding(expense).catch((err) => {
+            logger.error({ err, expenseId: expense.id }, 'Failed to store embedding');
+          });
+        }
+      })();
+
+      await deleteCachePattern(`expenses:${userId}:*`);
+      await deleteCachePattern(`summary:${userId}:*`);
+
+      const converted = await convertAmountsToCurrency(rows, req.user!.currency || 'USD');
+      return { expenses: converted };
     }
-  })();
-
-  await deleteCachePattern(`expenses:${userId}:*`);
-  await deleteCachePattern(`summary:${userId}:*`);
-
-  const converted = await convertAmountsToCurrency(created, req.user!.currency || 'USD');
+  );
 
   res.status(201).json({
     success: true,
-    message: `Created ${created.length} expense(s)`,
-    data: { expenses: converted },
+    message: `Created ${created.expenses.length} expense(s)`,
+    data: { expenses: created.expenses },
   });
 });
 

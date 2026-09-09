@@ -3,6 +3,7 @@ import prisma from '../config/prisma';
 import { asyncHandler, AppError } from '../middleware/error.middleware';
 import { AuthRequest } from '../middleware/auth.middleware';
 import { logger } from '../config/logger';
+import { setCacheNx, deleteCache } from '../config/redis';
 
 /**
  * RevenueCat webhook -> keep User.isPremium/premiumUntil in sync with the
@@ -39,6 +40,16 @@ export const revenuecatWebhook = asyncHandler(async (req: AuthRequest, res: Resp
     return;
   }
 
+  const eventId = typeof event.id === 'string' ? event.id : null;
+  if (eventId) {
+    const lock = await setCacheNx(`idem:revenuecat:${eventId}`, { processed: true }, 60 * 60 * 24 * 14);
+    if (lock === 'exists') {
+      res.json({ success: true, message: 'Already processed' });
+      return;
+    }
+  }
+
+  try {
   // We log the app in with our own user id, so app_user_id is a User.id.
   const candidateIds = [event.app_user_id, event.original_app_user_id].filter(
     (id: unknown): id is string => typeof id === 'string' && !id.startsWith('$RCAnonymousID:')
@@ -100,6 +111,10 @@ export const revenuecatWebhook = asyncHandler(async (req: AuthRequest, res: Resp
   }
 
   res.json({ success: true });
+  } catch (err) {
+    if (eventId) await deleteCache(`idem:revenuecat:${eventId}`);
+    throw err;
+  }
 });
 
 // @desc    Current subscription status (also lazily expires stale premium)

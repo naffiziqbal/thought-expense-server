@@ -55,6 +55,22 @@ export const setCache = async (key: string, value: any, ttl: number = 3600): Pro
   }
 };
 
+/** SET NX. Returns `ok` if written, `exists` if the key is already set, `error` if Redis failed. */
+export const setCacheNx = async (
+  key: string,
+  value: any,
+  ttl: number
+): Promise<'ok' | 'exists' | 'error'> => {
+  try {
+    const client = getRedisClient();
+    const result = await client.set(key, JSON.stringify(value), { NX: true, EX: ttl });
+    return result === 'OK' ? 'ok' : 'exists';
+  } catch (error) {
+    logger.error({ err: error }, 'Redis setCacheNx error');
+    return 'error';
+  }
+};
+
 export const getCache = async <T = any>(key: string): Promise<T | null> => {
   try {
     const client = getRedisClient();

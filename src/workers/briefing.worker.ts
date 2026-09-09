@@ -7,7 +7,7 @@ import {
   BRIEFING_USER_JOB,
 } from '../queues/briefing.queue';
 import { queueConnection } from '../queues/queue.connection';
-import { generateWeeklyBriefingForUser, listBriefingRecipients } from '../services/briefing.service';
+import { generateWeeklyBriefingForUser, listBriefingRecipients, utcIsoWeekKey } from '../services/briefing.service';
 import { logger } from '../config/logger';
 import * as Sentry from '@sentry/node';
 
@@ -22,8 +22,15 @@ export const startBriefingWorker = (): void => {
       if (job.name === BRIEFING_DISPATCH_JOB) {
         const userIds = await listBriefingRecipients();
         logger.info({ count: userIds.length }, 'Enqueueing user briefings');
+        const weekKey = utcIsoWeekKey();
         await briefingQueue.addBulk(
-          userIds.map((userId) => ({ name: BRIEFING_USER_JOB, data: { userId } }))
+          userIds.map((userId) => ({
+            name: BRIEFING_USER_JOB,
+            data: { userId },
+            opts: {
+              jobId: `briefing-${weekKey}-${userId}`,
+            },
+          }))
         );
         return { dispatched: userIds.length };
       }

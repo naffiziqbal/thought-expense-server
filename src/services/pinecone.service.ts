@@ -72,8 +72,8 @@ export const upsertExpenseVector = async (
 
     return true;
   } catch (error) {
-    logger.error({ err: error }, 'Pinecone upsert error');
-    throw error;
+    logger.error({ err: error, expenseId }, 'Pinecone upsert error');
+    return false;
   }
 };
 

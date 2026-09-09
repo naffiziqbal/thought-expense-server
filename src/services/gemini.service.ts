@@ -29,7 +29,7 @@ const BACKUP_MODELS = (process.env.GEMINI_BACKUP_MODELS || 'gemini-3.6-flash,gem
   .map((m) => m.trim())
   .filter(Boolean);
 
-function isRetryableError(error: unknown): boolean {
+export function isRetryableError(error: unknown): boolean {
   const msg = error instanceof Error ? error.message : String(error);
   return (
     /503|429|500|502|504/.test(msg) ||
