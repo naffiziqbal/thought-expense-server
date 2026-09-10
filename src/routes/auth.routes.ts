@@ -1,6 +1,6 @@
 import express, { Router } from 'express';
-import rateLimit from 'express-rate-limit';
 import { body } from 'express-validator';
+import { forgotPasswordLimiter, otpVerifyLimiter } from '../middleware/rateLimit';
 import {
   signup,
   login,
@@ -59,20 +59,6 @@ const changePasswordValidation = [
   body('currentPassword').notEmpty().withMessage('Current password is required'),
   body('newPassword').isLength({ min: 6 }).withMessage('New password must be at least 6 characters'),
 ];
-
-// Stricter rate limit for forgot-password to prevent email abuse
-const forgotPasswordLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 5,
-  message: 'Too many reset requests. Please try again later.',
-});
-
-// Lenient limiter for OTP verification (attempts are also capped per code)
-const otpVerifyLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 20,
-  message: 'Too many attempts. Please try again later.',
-});
 
 // Routes
 router.post('/signup', signupValidation, validate, signup);

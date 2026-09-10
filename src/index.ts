@@ -4,10 +4,10 @@ import express, { Request, Response } from "express";
 import cors from "cors";
 import helmet from "helmet";
 import compression from "compression";
-import rateLimit from "express-rate-limit";
 import * as Sentry from "@sentry/node";
 
 import { connectRedis } from "./config/redis";
+import { aiRateLimit, generalRateLimit, initRateLimiters } from "./middleware/rateLimit";
 import { httpLogger, logger } from "./config/logger";
 import { initPinecone } from "./services/pinecone.service";
 import authRoutes from "./routes/auth.routes";
@@ -36,56 +36,14 @@ app.use(
   })
 );
 
-// Rate limiting (production only).
-// Keyed by the authenticated user (JWT subject) when present, falling back to
-// IP — mobile users behind carrier-grade NAT share IPs, so per-IP buckets
-// alone throttle innocent users. The JWT is not verified here (auth middleware
-// does that); it is only used as a bucketing key.
-const rateLimitKey = (req: Request): string => {
-  const auth = req.headers.authorization;
-  if (auth?.startsWith("Bearer ")) {
-    try {
-      const payload = JSON.parse(
-        Buffer.from(auth.split(" ")[1].split(".")[1], "base64url").toString("utf8")
-      );
-      if (payload?.id) return `user:${payload.id}`;
-    } catch {
-      // malformed token: fall through to IP
-    }
-  }
-  return `ip:${req.ip}`;
-};
-
-if (process.env.NODE_ENV === "production") {
-  // General API traffic: generous — normal screens fire several requests each
-  const generalLimiter = rateLimit({
-    windowMs: 15 * 60 * 1000,
-    max: 600,
-    keyGenerator: rateLimitKey,
-    standardHeaders: true,
-    legacyHeaders: false,
-    validate: { trustProxy: false },
-    message: { success: false, message: "Too many requests. Please slow down and try again in a few minutes." },
-  });
-
-  // Expensive AI endpoints (Gemini-backed): tighter budget per user
-  const aiLimiter = rateLimit({
-    windowMs: 5 * 60 * 1000,
-    max: 30,
-    keyGenerator: rateLimitKey,
-    standardHeaders: true,
-    legacyHeaders: false,
-    validate: { trustProxy: false },
-    message: { success: false, message: "You're going a bit fast for our AI. Please wait a few minutes and try again." },
-  });
-
-  app.use("/api/expenses/parse", aiLimiter);
-  app.use("/api/expenses/ocr", aiLimiter);
-  app.use("/api/assistant", aiLimiter);
-  app.use("/api/insights/generate", aiLimiter);
-  app.use("/api/insights/briefing/generate", aiLimiter);
-  app.use("/api", generalLimiter);
-}
+// Rate limiting — Redis-backed after initRateLimiters() (see startServer).
+// Keyed by JWT user id when present, else IP. AI routes are tighter.
+app.use("/api/expenses/parse", aiRateLimit);
+app.use("/api/expenses/ocr", aiRateLimit);
+app.use("/api/assistant", aiRateLimit);
+app.use("/api/insights/generate", aiRateLimit);
+app.use("/api/insights/briefing/generate", aiRateLimit);
+app.use("/api", generalRateLimit);
 
 // Body parsing middleware
 app.use(express.json({ limit: "10mb" }));
@@ -152,6 +110,7 @@ const startServer = async (): Promise<void> => {
   try {
     // Connect to Redis
     await connectRedis();
+    initRateLimiters();
     logger.info("Redis connected");
 
     // Initialize Pinecone
