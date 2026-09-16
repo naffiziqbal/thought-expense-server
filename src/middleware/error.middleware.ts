@@ -17,7 +17,20 @@ export const errorHandler = (err: any, req: Request, res: Response, next: NextFu
   let error = { ...err };
   error.message = err.message;
 
-  logger.error({ err, method: req.method, url: req.originalUrl }, err.message || 'Unhandled error');
+  const statusForLog =
+    typeof err?.statusCode === 'number'
+      ? err.statusCode
+      : err?.name === 'JsonWebTokenError' || err?.name === 'TokenExpiredError'
+        ? 401
+        : err?.name === 'ValidationError'
+          ? 400
+          : 500;
+  const logPayload = { err, method: req.method, url: req.originalUrl };
+  if (statusForLog >= 500) {
+    logger.error(logPayload, err.message || 'Unhandled error');
+  } else {
+    logger.warn(logPayload, err.message || 'Request error');
+  }
 
   // Prisma errors
   if (err.code === 'P2002') {
