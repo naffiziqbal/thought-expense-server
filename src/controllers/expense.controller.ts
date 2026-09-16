@@ -11,6 +11,7 @@ import { AuthRequest } from '../middleware/auth.middleware';
 import { expenseParseQueue } from '../queues/expenseParse.queue';
 import { persistParsedExpenses } from '../services/expenseParse.service';
 import { detectRecurring } from '../services/recurring.service';
+import { checkBudgetAndNotify } from '../services/budgetAlert.service';
 import { logger } from '../config/logger';
 import { idempotencyKeyFromRequest, withIdempotency } from '../services/idempotency.service';
 
@@ -195,6 +196,8 @@ export const createExpense = asyncHandler(async (req: AuthRequest, res: Response
   await deleteCachePattern(`expenses:${userId}:*`);
   await deleteCachePattern(`summary:${userId}:*`);
 
+  void checkBudgetAndNotify(userId);
+
   const [converted] = await convertAmountsToCurrency([expense], req.user!.currency || 'USD');
 
   res.status(201).json({
@@ -264,6 +267,8 @@ export const createExpensesBatch = asyncHandler(async (req: AuthRequest, res: Re
 
       await deleteCachePattern(`expenses:${userId}:*`);
       await deleteCachePattern(`summary:${userId}:*`);
+
+      void checkBudgetAndNotify(userId);
 
       const converted = await convertAmountsToCurrency(rows, req.user!.currency || 'USD');
       return { expenses: converted };

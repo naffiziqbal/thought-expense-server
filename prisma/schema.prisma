@@ -22,6 +22,8 @@ model User {
   subscriptionStatus    String?   // active | cancelled | grace | expired
   subscriptionProductId String?
   subscriptionStore     String?   // play_store | app_store | promo
+  pushEnabled           Boolean   @default(true)
+  budgetAlertsEnabled   Boolean   @default(true)
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
 
@@ -31,8 +33,47 @@ model User {
   budgets          Budget[]
   categoryBudgets  CategoryBudget[]
   goals            Goal[]
+  deviceTokens     DeviceToken[]
+  recurringRules   RecurringRule[]
 
   @@index([email])
+}
+
+/// Expo push token for one installed app (a user may have several devices).
+model DeviceToken {
+  id        String   @id @default(uuid())
+  userId    String
+  token     String   @unique
+  platform  String   @default("android") // ios | android
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+/// A user-confirmed repeating expense that the cron worker logs automatically.
+model RecurringRule {
+  id          String    @id @default(uuid())
+  userId      String
+  description String
+  amount      Float
+  currency    String    @default("USD")
+  category    String
+  frequency   String    @default("monthly") // weekly | monthly
+  dayOfMonth  Int?      // 1-31, monthly rules
+  dayOfWeek   Int?      // 0-6 (Sun-Sat), weekly rules
+  nextRunAt   DateTime
+  lastRunAt   DateTime?
+  isActive    Boolean   @default(true)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, isActive])
+  @@index([isActive, nextRunAt])
 }
 
 model Goal {

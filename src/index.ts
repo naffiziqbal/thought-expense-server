@@ -17,10 +17,14 @@ import budgetRoutes from "./routes/budget.routes";
 import billingRoutes from "./routes/billing.routes";
 import assistantRoutes from "./routes/assistant.routes";
 import goalRoutes from "./routes/goal.routes";
+import notificationRoutes from "./routes/notification.routes";
+import recurringRuleRoutes from "./routes/recurringRule.routes";
 import { errorHandler } from "./middleware/error.middleware";
 import { startParseWorkers, stopParseWorkers } from "./workers/parse.worker";
 import { startBriefingWorker, stopBriefingWorker } from "./workers/briefing.worker";
+import { startRecurringWorker, stopRecurringWorker } from "./workers/recurring.worker";
 import { registerBriefingSchedule } from "./queues/briefing.queue";
+import { registerRecurringSchedule } from "./queues/recurring.queue";
 
 const app = express();
 const PORT = process.env.PORT || 7100;
@@ -84,6 +88,8 @@ app.use("/api/budgets", budgetRoutes);
 app.use("/api/billing", billingRoutes);
 app.use("/api/assistant", assistantRoutes);
 app.use("/api/goals", goalRoutes);
+app.use("/api/notifications", notificationRoutes);
+app.use("/api/recurring", recurringRuleRoutes);
 
 // 404 handler
 app.use("*", (_req: Request, res: Response) => {
@@ -126,6 +132,11 @@ const startServer = async (): Promise<void> => {
     await registerBriefingSchedule();
     logger.info("Briefing worker and weekly schedule registered");
 
+    // Auto-logged recurring expenses (hourly sweep)
+    startRecurringWorker();
+    await registerRecurringSchedule();
+    logger.info("Recurring worker and hourly sweep registered");
+
     // Start server
     app.listen(PORT, () => {
       logger.info(
@@ -144,12 +155,16 @@ const startServer = async (): Promise<void> => {
 // Graceful shutdown
 process.on("SIGTERM", () => {
   logger.info("SIGTERM received, closing HTTP server");
-  Promise.allSettled([stopParseWorkers(), stopBriefingWorker()]).finally(() => process.exit(0));
+  Promise.allSettled([stopParseWorkers(), stopBriefingWorker(), stopRecurringWorker()]).finally(() =>
+    process.exit(0)
+  );
 });
 
 process.on("SIGINT", () => {
   logger.info("SIGINT received, closing HTTP server");
-  Promise.allSettled([stopParseWorkers(), stopBriefingWorker()]).finally(() => process.exit(0));
+  Promise.allSettled([stopParseWorkers(), stopBriefingWorker(), stopRecurringWorker()]).finally(() =>
+    process.exit(0)
+  );
 });
 
 startServer();

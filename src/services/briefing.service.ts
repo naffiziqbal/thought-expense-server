@@ -9,6 +9,7 @@ import { convertAmountsToCurrency } from './exchangeRate.service';
 import { buildAdvisorContext } from './financialContext.service';
 import { generateBriefingContent, BriefingContent } from './advisor.service';
 import { sendWeeklyBriefingEmail } from './email.service';
+import { sendPushToUser } from './push.service';
 import { deleteCachePattern } from '../config/redis';
 
 const round2 = (n: number): number => Math.round(n * 100) / 100;
@@ -166,6 +167,12 @@ export async function generateWeeklyBriefingForUser(
       });
     }
   }
+
+  void sendPushToUser(userId, {
+    title: 'Your weekly briefing is ready',
+    body: briefing.summary.slice(0, 140),
+    data: { screen: 'insights' },
+  });
 
   return { generated: true, briefing, insightId: insight.id, emailed };
 }

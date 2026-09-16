@@ -2,6 +2,7 @@ import prisma from '../config/prisma';
 import { deleteCachePattern } from '../config/redis';
 import { convertAmountsToCurrency } from './exchangeRate.service';
 import { storeExpenseEmbedding } from './rag.service';
+import { checkBudgetAndNotify } from './budgetAlert.service';
 import { logger } from '../config/logger';
 
 interface ParsedExpenseInput {
@@ -45,6 +46,8 @@ export const persistParsedExpenses = async (
 
   await deleteCachePattern(`expenses:${userId}:*`);
   await deleteCachePattern(`summary:${userId}:*`);
+
+  void checkBudgetAndNotify(userId);
 
   const convertedExpenses = await convertAmountsToCurrency(createdExpenses, userCurrency || 'USD');
   const needsReview = createdExpenses
