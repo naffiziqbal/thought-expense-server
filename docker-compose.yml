@@ -1,4 +1,7 @@
-version: '3.8'
+# Pinned so compose does not default the project name to the directory name
+# ("server"), which collides with other projects and makes compose adopt or
+# destroy their containers.
+name: thoughtexpense
 
 services:
   postgres:
@@ -6,7 +9,9 @@ services:
     container_name: thoughtexpense-postgres
     restart: unless-stopped
     ports:
-      - "5432:5432"
+      # 5433 on the host to match DATABASE_URL in .env, and to stay clear of
+      # any native Postgres already bound to 5432.
+      - "5433:5432"
     environment:
       POSTGRES_USER: thoughtexpense
       POSTGRES_PASSWORD: password
