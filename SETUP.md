@@ -223,12 +223,40 @@ docker-compose logs redis
 # Open Prisma Studio (visual database browser)
 npm run prisma:studio
 
-# Create new migration after schema changes
+# Create new migration after schema changes (local only)
 npm run prisma:migrate
 
-# Reset database (WARNING: deletes all data)
-npx prisma migrate reset
+# Apply migrations in production — never use db push or migrate reset there
+npx prisma migrate deploy
 ```
+
+> `prisma migrate dev`, `prisma db push` and `prisma migrate reset` reshape or
+> drop the database to match `schema.prisma`. They are local-development
+> commands only. Production schema changes go through a committed migration and
+> `prisma migrate deploy`.
+
+### Backups
+
+Dumps run from `scripts/backup-db.sh`: it writes a compressed `pg_dump`, checks
+the archive is readable and non-empty, uploads it to a **private** Spaces bucket,
+then prunes old copies locally and remotely. See the `BACKUP_*` variables in
+`.env.example`.
+
+```bash
+pnpm backup                   # dump + verify + upload + prune
+pnpm backup:list              # what is stored in Spaces
+pnpm backup:prune             # dry-run the retention policy
+pnpm backup:restore <dump>    # restore into a scratch DB and print row counts
+
+# Schedule it (3am daily)
+crontab -e
+0 3 * * * /var/www/personal/thoughtExpense/thought-expense-server/scripts/backup-db.sh >> /var/log/thoughtexpense-backup.log 2>&1
+```
+
+Retention keeps every dump from the last `BACKUP_KEEP_DAYS` days plus the
+earliest dump of each month for `BACKUP_KEEP_MONTHS` months. Set
+`BACKUP_HEALTHCHECK_URL` so a backup that stops running gets noticed, and run
+`pnpm backup:restore` quarterly — an untested backup is only a hypothesis.
 
 ## Next Steps
 
@@ -262,8 +290,13 @@ docker-compose logs -f      # Follow logs
 
 # Database
 npm run prisma:generate     # Generate Prisma client
-npm run prisma:migrate      # Run migrations
-npx prisma migrate reset    # Reset database
+npm run prisma:migrate      # Create a migration (local only)
+npx prisma migrate deploy   # Apply migrations (production)
+
+# Backups
+pnpm backup                 # dump + upload to Spaces
+pnpm backup:list            # list stored dumps
+pnpm backup:restore <dump>  # restore into a scratch database
 ```
 
 ## Environment Variables Reference

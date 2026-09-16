@@ -10,6 +10,10 @@
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "prisma:studio": "prisma studio",
+    "backup": "./scripts/backup-db.sh",
+    "backup:list": "node scripts/spaces-backup.js list",
+    "backup:prune": "node scripts/spaces-backup.js prune --dry-run",
+    "backup:restore": "./scripts/restore-db.sh",
     "sync-catalog-db": "ts-node -r dotenv/config src/scripts/syncExpenseCatalogToProduction.ts",
     "sync-catalog-db:apply": "ts-node -r dotenv/config src/scripts/syncExpenseCatalogToProduction.ts --apply"
   },
