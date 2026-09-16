@@ -162,6 +162,10 @@ model Budget {
   month      Int
   year       Int
   totalLimit Float
+  /// Currency the limit was entered in, so it can be converted when the user
+  /// switches currency. Null on rows written before this was tracked; those are
+  /// read as already being in the user's current currency.
+  currency   String?
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
 
@@ -178,6 +182,8 @@ model CategoryBudget {
   year      Int
   category  String
   limit     Float
+  /// See Budget.currency.
+  currency  String?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 

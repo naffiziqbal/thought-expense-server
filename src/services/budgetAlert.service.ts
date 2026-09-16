@@ -6,25 +6,39 @@
 import prisma from '../config/prisma';
 import { logger } from '../config/logger';
 import { setCacheNx } from '../config/redis';
-import { convertAmountsToCurrency } from './exchangeRate.service';
+import { convertAmountsToCurrency, convertLimitsToCurrency } from './exchangeRate.service';
 import { sendPushToUser } from './push.service';
 
 const THRESHOLDS = [100, 80] as const;
 const DEDUPE_TTL_SEC = 60 * 60 * 24 * 40;
 
-async function monthlyLimit(userId: string, month: number, year: number): Promise<number | null> {
+/** Returned in `currency`, so it is comparable to the converted month spend. */
+async function monthlyLimit(
+  userId: string,
+  month: number,
+  year: number,
+  currency: string
+): Promise<number | null> {
   const budget = await prisma.budget.findUnique({
     where: { userId_month_year: { userId, month, year } },
-    select: { totalLimit: true },
+    select: { totalLimit: true, currency: true },
   });
-  if (budget) return budget.totalLimit;
+  if (budget) {
+    const [converted] = await convertLimitsToCurrency(
+      [{ limit: budget.totalLimit, currency: budget.currency }],
+      currency
+    );
+    return converted;
+  }
 
   const categoryBudgets = await prisma.categoryBudget.findMany({
     where: { userId, month, year },
-    select: { limit: true },
+    select: { limit: true, currency: true },
   });
   if (categoryBudgets.length === 0) return null;
-  return categoryBudgets.reduce((sum, cb) => sum + cb.limit, 0);
+
+  const converted = await convertLimitsToCurrency(categoryBudgets, currency);
+  return converted.reduce((sum, limit) => sum + limit, 0);
 }
 
 /**
@@ -43,7 +57,9 @@ export async function checkBudgetAndNotify(userId: string): Promise<void> {
     const month = now.getMonth() + 1;
     const year = now.getFullYear();
 
-    const limit = await monthlyLimit(userId, month, year);
+    const currency = user.currency || 'USD';
+
+    const limit = await monthlyLimit(userId, month, year, currency);
     if (!limit || limit <= 0) return;
 
     const rows = await prisma.expense.findMany({
@@ -58,7 +74,6 @@ export async function checkBudgetAndNotify(userId: string): Promise<void> {
     });
     if (rows.length === 0) return;
 
-    const currency = user.currency || 'USD';
     const converted = await convertAmountsToCurrency(rows, currency);
     const spent = converted.reduce((sum, e) => sum + e.amount, 0);
     const percentage = Math.round((spent / limit) * 100);

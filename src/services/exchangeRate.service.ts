@@ -80,6 +80,25 @@ export async function convertAmount(
 }
 
 /**
+ * Convert stored budget limits into a display currency, returning amounts in
+ * the same order as the input. A null source currency means the row predates
+ * currency tracking, so it is assumed to already be in the target currency and
+ * passes through untouched.
+ */
+export async function convertLimitsToCurrency(
+  limits: { limit: number; currency?: string | null }[],
+  targetCurrency: string
+): Promise<number[]> {
+  if (limits.length === 0) return [];
+
+  const converted = await convertAmountsToCurrency(
+    limits.map((l) => ({ amount: l.limit, currency: l.currency || targetCurrency })),
+    targetCurrency
+  );
+  return converted.map((c) => parseFloat(c.amount.toFixed(2)));
+}
+
+/**
  * Convert multiple amounts - more efficient (single API call per unique fromCurrency).
  */
 export async function convertAmountsToCurrency<T extends { amount: number; currency: string }>(

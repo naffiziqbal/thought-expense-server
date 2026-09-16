@@ -3,7 +3,7 @@ import prisma from '../config/prisma';
 import { asyncHandler } from '../middleware/error.middleware';
 import { AppError } from '../middleware/error.middleware';
 import { AuthRequest } from '../middleware/auth.middleware';
-import { convertAmountsToCurrency } from '../services/exchangeRate.service';
+import { convertAmountsToCurrency, convertLimitsToCurrency } from '../services/exchangeRate.service';
 import { parseCategoryBudgets } from '../services/gemini.service';
 import { categoryBudgetParseQueue } from '../queues/categoryBudgetParse.queue';
 
@@ -12,6 +12,7 @@ import { categoryBudgetParseQueue } from '../queues/categoryBudgetParse.queue';
 // @access  Private
 export const upsertBudget = asyncHandler(async (req: AuthRequest, res: Response) => {
   const userId = req.user!.id;
+  const userCurrency = req.user!.currency || 'USD';
   const { month, year, total_limit } = req.body as {
     month: number;
     year: number;
@@ -38,14 +39,18 @@ export const upsertBudget = asyncHandler(async (req: AuthRequest, res: Response)
         year,
       },
     },
+    // The limit is denominated in whatever currency the user is using now, and
+    // is converted on read once they switch.
     update: {
       totalLimit: total_limit,
+      currency: userCurrency,
     },
     create: {
       userId,
       month,
       year,
       totalLimit: total_limit,
+      currency: userCurrency,
     },
   });
 
@@ -109,7 +114,11 @@ export const getCurrentBudget = asyncHandler(async (req: AuthRequest, res: Respo
   let budgetId: string | undefined;
 
   if (budget) {
-    totalLimit = budget.totalLimit;
+    const [converted] = await convertLimitsToCurrency(
+      [{ limit: budget.totalLimit, currency: budget.currency }],
+      userCurrency
+    );
+    totalLimit = converted;
     budgetId = budget.id;
   } else {
     // Fall back to category budgets when no explicit total Budget exists
@@ -123,7 +132,9 @@ export const getCurrentBudget = asyncHandler(async (req: AuthRequest, res: Respo
       });
       return;
     }
-    totalLimit = categoryBudgets.reduce((sum: number, cb: { limit: number }) => sum + cb.limit, 0);
+    // Each category limit can carry its own currency, so convert before summing.
+    const convertedLimits = await convertLimitsToCurrency(categoryBudgets, userCurrency);
+    totalLimit = convertedLimits.reduce((sum, limit) => sum + limit, 0);
     budgetId = `category-derived-${month}-${year}`;
   }
 
@@ -158,9 +169,18 @@ export const getBudgetHistory = asyncHandler(async (req: AuthRequest, res: Respo
     take: limit,
   });
 
+  // One batched conversion for every row's limit, keyed by position.
+  const convertedLimits = await convertLimitsToCurrency(
+    budgets.map((b: { totalLimit: number; currency: string | null }) => ({
+      limit: b.totalLimit,
+      currency: b.currency,
+    })),
+    userCurrency
+  );
+
   const results = [];
 
-  for (const budget of budgets) {
+  for (const [index, budget] of budgets.entries()) {
     const monthStart = new Date(budget.year, budget.month - 1, 1);
     const monthEnd = new Date(budget.year, budget.month, 0, 23, 59, 59, 999);
 
@@ -187,7 +207,7 @@ export const getBudgetHistory = asyncHandler(async (req: AuthRequest, res: Respo
       totalSpent = converted.reduce((sum, e) => sum + e.amount, 0);
     }
 
-    const totalLimit = budget.totalLimit;
+    const totalLimit = convertedLimits[index];
     const remaining = totalLimit - totalSpent;
     const percentage = totalLimit > 0 ? Math.round((totalSpent / totalLimit) * 100) : 0;
 
@@ -329,6 +349,7 @@ export const getCategoryBudgetParseJobStatus = asyncHandler(async (req: AuthRequ
 // Upsert category budgets for a month
 export const upsertCategoryBudgets = asyncHandler(async (req: AuthRequest, res: Response) => {
   const userId = req.user!.id;
+  const userCurrency = req.user!.currency || 'USD';
   const { month, year, items } = req.body as {
     month: number;
     year: number;
@@ -354,8 +375,8 @@ export const upsertCategoryBudgets = asyncHandler(async (req: AuthRequest, res: 
           category,
         },
       },
-      update: { limit },
-      create: { userId, month, year, category, limit },
+      update: { limit, currency: userCurrency },
+      create: { userId, month, year, category, limit, currency: userCurrency },
     });
   }
 
@@ -411,21 +432,24 @@ export const getCurrentCategoryBudgets = asyncHandler(async (req: AuthRequest, r
     percentage: number;
   }[] = [];
 
-  for (const b of budgets) {
+  const convertedLimits = await convertLimitsToCurrency(budgets, userCurrency);
+
+  for (const [index, b] of budgets.entries()) {
     const rows = byCategory.get(b.category) || [];
     let spent = 0;
     if (rows.length > 0) {
       const converted = await convertAmountsToCurrency(rows, userCurrency);
       spent = converted.reduce((sum, r) => sum + r.amount, 0);
     }
-    const remaining = b.limit - spent;
-    const percentage = b.limit > 0 ? Math.round((spent / b.limit) * 100) : 0;
+    const limit = convertedLimits[index];
+    const remaining = limit - spent;
+    const percentage = limit > 0 ? Math.round((spent / limit) * 100) : 0;
 
     result.push({
       month,
       year,
       category: b.category,
-      limit: b.limit,
+      limit,
       spent: parseFloat(spent.toFixed(2)),
       remaining: parseFloat(remaining.toFixed(2)),
       percentage,

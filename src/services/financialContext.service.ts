@@ -5,7 +5,7 @@
  */
 
 import prisma from '../config/prisma';
-import { convertAmountsToCurrency } from './exchangeRate.service';
+import { convertAmountsToCurrency, convertLimitsToCurrency } from './exchangeRate.service';
 import { getSpendingIntelligence } from './analytics.service';
 import { AdvisorContext } from './advisor.service';
 
@@ -67,15 +67,21 @@ export async function buildAdvisorContext(
 
   const topConverted = await convertAmountsToCurrency(topRows, currency);
 
+  // The advisor quotes these numbers verbatim, so the limit has to be in the
+  // same currency as the spend it is compared against.
+  const [budgetLimit] = budget
+    ? await convertLimitsToCurrency([{ limit: budget.totalLimit, currency: budget.currency }], currency)
+    : [0];
+
   return {
     currency,
     currentMonth: current,
     previousMonth: previous.transactionCount > 0 ? previous : undefined,
     budget: budget
       ? {
-          totalLimit: budget.totalLimit,
+          totalLimit: budgetLimit,
           totalSpent: current.total,
-          remaining: round2(budget.totalLimit - current.total),
+          remaining: round2(budgetLimit - current.total),
         }
       : null,
     goals: goals.map((g) => ({
