@@ -21,7 +21,11 @@ export interface AuthRequest extends Request {
   };
 }
 
-export const protect = async (req: AuthRequest, res: Response, next: NextFunction): Promise<void> => {
+export const protect = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
   try {
     let token: string | undefined;
 
@@ -53,7 +57,7 @@ export const protect = async (req: AuthRequest, res: Response, next: NextFunctio
           isPremium: true,
           createdAt: true,
           tokenVersion: true,
-        }
+        },
       });
 
       if (!user) {
@@ -68,7 +72,7 @@ export const protect = async (req: AuthRequest, res: Response, next: NextFunctio
 
       req.user = sessionUser;
       next();
-    } catch (error) {
+    } catch {
       return next(new AppError('Not authorized to access this route', 401));
     }
   } catch (error) {

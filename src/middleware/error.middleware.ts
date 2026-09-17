@@ -13,8 +13,8 @@ export class AppError extends Error {
   }
 }
 
-export const errorHandler = (err: any, req: Request, res: Response, next: NextFunction): void => {
-  let error = { ...err };
+export const errorHandler = (err: any, req: Request, res: Response, _next: NextFunction): void => {
+  const error = { ...err };
   error.message = err.message;
 
   const statusForLog =
@@ -56,7 +56,9 @@ export const errorHandler = (err: any, req: Request, res: Response, next: NextFu
 
   // Validation errors
   if (err.name === 'ValidationError') {
-    error.message = Object.values(err.errors).map((e: any) => e.message).join(', ');
+    error.message = Object.values(err.errors)
+      .map((e: any) => e.message)
+      .join(', ');
     error.statusCode = 400;
   }
 
@@ -73,12 +75,14 @@ export const errorHandler = (err: any, req: Request, res: Response, next: NextFu
   res.status(error.statusCode || 500).json({
     success: false,
     message: error.message || 'Internal Server Error',
-    ...(process.env.NODE_ENV === 'development' && { stack: err.stack })
+    ...(process.env.NODE_ENV === 'development' && { stack: err.stack }),
   });
 };
 
 type AsyncFunction = (req: Request, res: Response, next: NextFunction) => Promise<any>;
 
-export const asyncHandler = (fn: AsyncFunction) => (req: Request, res: Response, next: NextFunction): void => {
-  Promise.resolve(fn(req, res, next)).catch(next);
-};
+export const asyncHandler =
+  (fn: AsyncFunction) =>
+  (req: Request, res: Response, next: NextFunction): void => {
+    Promise.resolve(fn(req, res, next)).catch(next);
+  };

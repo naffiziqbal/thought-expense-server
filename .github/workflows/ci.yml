@@ -2,8 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [dev, main]
+    branches: [main]
   pull_request:
+    branches: [main]
 
 permissions:
   contents: read
@@ -57,44 +58,19 @@ jobs:
       - name: Apply migrations
         run: pnpm exec prisma migrate deploy
 
+      - name: Lint
+        run: pnpm lint
+
       - name: Typecheck
         run: pnpm typecheck
 
       - name: Test
         run: pnpm test
 
-  merge-to-main:
-    name: Merge dev into main
-    needs: test
-    if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          ref: main
-
-      - name: Fast-forward main to passing dev
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git fetch origin dev
-          git merge --ff-only origin/dev
-          git push origin main
-
   deploy:
     name: Build on VPS
-    needs: [test, merge-to-main]
-    if: |
-      always() &&
-      github.event_name == 'push' &&
-      needs.test.result == 'success' &&
-      (
-        (github.ref == 'refs/heads/dev' && needs.merge-to-main.result == 'success') ||
-        (github.ref == 'refs/heads/main' && needs.merge-to-main.result == 'skipped')
-      )
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
       - name: Pull, generate, and build on VPS

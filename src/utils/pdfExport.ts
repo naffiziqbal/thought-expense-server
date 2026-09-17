@@ -2,9 +2,7 @@ import PDFDocument from 'pdfkit';
 import type { Expense } from '@prisma/client';
 
 const MARGIN = 50;
-const PAGE_WIDTH = 595;
 const TABLE_LEFT = MARGIN;
-const TABLE_RIGHT = PAGE_WIDTH - MARGIN;
 
 function drawTableRow(
   doc: PDFKit.PDFDocument,
@@ -56,11 +54,16 @@ export async function createPdf(
     doc.moveDown(1.5);
 
     const colWidths = [70, 180, 100, 80, 55];
-    const tableWidth = colWidths.reduce((a, b) => a + b, 0);
     let y = doc.y;
 
     // Table header
-    y = drawTableRow(doc, y, ['Date', 'Description', 'Category', 'Amount', 'Currency'], colWidths, true);
+    y = drawTableRow(
+      doc,
+      y,
+      ['Date', 'Description', 'Category', 'Amount', 'Currency'],
+      colWidths,
+      true
+    );
     doc.font('Helvetica');
 
     // Data rows
@@ -90,7 +93,14 @@ export async function createPdf(
       doc.addPage();
       y = 50;
     }
-    y = drawTableRow(doc, y, ['', 'Total Expense', '', total.toFixed(2), currency], colWidths, false, true);
+    drawTableRow(
+      doc,
+      y,
+      ['', 'Total Expense', '', total.toFixed(2), currency],
+      colWidths,
+      false,
+      true
+    );
 
     doc.end();
   });

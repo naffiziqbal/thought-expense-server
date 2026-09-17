@@ -1,13 +1,11 @@
-import "dotenv/config";
-import * as Sentry from "@sentry/node";
+import 'dotenv/config';
+import * as Sentry from '@sentry/node';
 
-function profilingIntegration(): ReturnType<
-  typeof import("@sentry/profiling-node").nodeProfilingIntegration
-> | undefined {
+function profilingIntegration():
+  ReturnType<typeof import('@sentry/profiling-node').nodeProfilingIntegration> | undefined {
   try {
-    // Native addon; skipped if the cpu-profiler install script was not approved.
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { nodeProfilingIntegration } = require("@sentry/profiling-node") as typeof import("@sentry/profiling-node");
+    const { nodeProfilingIntegration } =
+      require('@sentry/profiling-node') as typeof import('@sentry/profiling-node');
     return nodeProfilingIntegration();
   } catch {
     return undefined;
@@ -20,11 +18,11 @@ const profiling = profilingIntegration();
 if (dsn) {
   Sentry.init({
     dsn,
-    environment: process.env.NODE_ENV || "development",
+    environment: process.env.NODE_ENV || 'development',
     integrations: profiling ? [profiling] : [],
     tracesSampleRate: 1.0,
     profileSessionSampleRate: 1.0,
-    profileLifecycle: "trace",
+    profileLifecycle: 'trace',
     sendDefaultPii: false,
     dataCollection: {
       userInfo: false,

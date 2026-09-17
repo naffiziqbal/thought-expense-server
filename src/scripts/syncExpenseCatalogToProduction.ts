@@ -140,7 +140,7 @@ async function main() {
     unknown.sort().forEach((u) => console.log(`  - ${JSON.stringify(u)}`));
   }
 
-  let reflowExpenseIds: { id: string; from: string; to: string }[] = [];
+  const reflowExpenseIds: { id: string; from: string; to: string }[] = [];
   if (reflowDescriptions) {
     const expenses = await prisma.expense.findMany({
       select: { id: true, description: true, category: true },
@@ -151,7 +151,9 @@ async function main() {
         reflowExpenseIds.push({ id: e.id, from: e.category, to: fromCat });
       }
     }
-    console.log(`\n--reflow-descriptions: would change ${reflowExpenseIds.length} expenses by description match`);
+    console.log(
+      `\n--reflow-descriptions: would change ${reflowExpenseIds.length} expenses by description match`
+    );
     const preview = reflowExpenseIds.slice(0, 20);
     for (const r of preview) {
       console.log(`  ${r.id}: "${r.from}" → "${r.to}"`);
@@ -240,7 +242,9 @@ async function main() {
     }
   });
 
-  console.log('\nApplied updates. Pinecone vectors still use old metadata until embeddings are refreshed (e.g. PATCH each expense or a future vector sync job).');
+  console.log(
+    '\nApplied updates. Pinecone vectors still use old metadata until embeddings are refreshed (e.g. PATCH each expense or a future vector sync job).'
+  );
   await prisma.$disconnect();
 }
 

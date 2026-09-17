@@ -8,7 +8,6 @@ const METADATA_STRING_MAX = 512;
 const READY_WAIT_MS = 60_000;
 const READY_POLL_MS = 2_000;
 
-let pinecone: Pinecone | null = null;
 let index: Index | null = null;
 let ready = false;
 
@@ -32,10 +31,7 @@ export function pineconeIndexName(): string {
 function isMissingIndexError(err: unknown): boolean {
   const name = err instanceof Error ? err.name : '';
   const message = err instanceof Error ? err.message : String(err);
-  return (
-    name === 'PineconeNotFoundError' ||
-    /404|not found|does not exist/i.test(message)
-  );
+  return name === 'PineconeNotFoundError' || /404|not found|does not exist/i.test(message);
 }
 
 function sleep(ms: number): Promise<void> {
@@ -96,7 +92,6 @@ async function waitUntilIndexReady(client: Pinecone, indexName: string): Promise
  */
 export const initPinecone = async (): Promise<boolean> => {
   ready = false;
-  pinecone = null;
   index = null;
 
   const apiKey = configuredApiKey();
@@ -153,7 +148,6 @@ export const initPinecone = async (): Promise<boolean> => {
       return false;
     }
 
-    pinecone = client;
     index = client.index(indexName);
     const stats = await index.describeIndexStats();
     ready = true;
@@ -168,7 +162,6 @@ export const initPinecone = async (): Promise<boolean> => {
     );
     return true;
   } catch (error) {
-    pinecone = null;
     index = null;
     ready = false;
     logger.error({ err: error, indexName }, 'Pinecone initialization failed');
@@ -226,7 +219,10 @@ export const querySimilarExpenses = async (
 ): Promise<Array<{ id?: string; score?: number; metadata?: Record<string, unknown> }>> => {
   if (!ready || !userId) return [];
   if (!isValidEmbedding(embedding)) {
-    logger.warn({ got: embedding.length, expected: EMBEDDING_DIMENSIONS }, 'Skip Pinecone query: bad embedding');
+    logger.warn(
+      { got: embedding.length, expected: EMBEDDING_DIMENSIONS },
+      'Skip Pinecone query: bad embedding'
+    );
     return [];
   }
   const k = Math.min(Math.max(1, Math.floor(topK) || 5), 100);
