@@ -57,5 +57,6 @@ describe('notification APIs', () => {
     const res = await request(app).post('/api/notifications/test').set(account.auth);
     expect(res.status).toBe(200);
     expect(res.body.data.delivered).toBe(0);
+    expect(res.body.data.reason).toBe('no_devices');
   });
 });

@@ -43,6 +43,11 @@ export const errorHandler = (err: any, req: Request, res: Response, _next: NextF
     error.statusCode = 404;
   }
 
+  if (err.code === 'P2021' || err.code === 'P2022') {
+    error.message = 'Database is missing a required table or column';
+    error.statusCode = 500;
+  }
+
   // JWT errors
   if (err.name === 'JsonWebTokenError') {
     error.message = 'Invalid token';

@@ -94,16 +94,24 @@ export const updatePreferences = asyncHandler(async (req: AuthRequest, res: Resp
 // @desc    Send a test push to this user's devices
 // @route   POST /api/notifications/test
 // @access  Private
-export const sendTestPush = asyncHandler(async (req: AuthRequest, res: Response) => {
-  const delivered = await sendPushToUser(req.user!.id, {
-    title: 'ThoughtExpense',
-    body: 'Push notifications are working.',
-    data: { screen: 'dashboard' },
-  });
+export const sendTestPush = asyncHandler(
+  async (req: AuthRequest, res: Response, next: NextFunction) => {
+    const result = await sendPushToUser(req.user!.id, {
+      title: 'ThoughtExpense',
+      body: 'Push notifications are working.',
+      data: { screen: 'dashboard' },
+    });
 
-  res.json({
-    success: true,
-    message: delivered > 0 ? 'Test notification sent' : 'No registered devices',
-    data: { delivered },
-  });
-});
+    if (result.reason === 'failed') {
+      return next(
+        new AppError('Could not reach the push service. Try again in a moment.', 503)
+      );
+    }
+
+    res.json({
+      success: true,
+      message: result.delivered > 0 ? 'Test notification sent' : 'No registered devices',
+      data: { delivered: result.delivered, reason: result.reason },
+    });
+  }
+);

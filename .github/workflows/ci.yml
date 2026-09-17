@@ -92,7 +92,7 @@ jobs:
             pnpm prisma generate
             pnpm build
             if command -v pm2 >/dev/null 2>&1; then
-              pm2 restart thoughtexpense-server || pm2 restart all
+              pm2 restart thought-server || pm2 restart 7
             else
               echo "Build finished. Restart the Node process on the VPS if it does not pick up dist/."
             fi
