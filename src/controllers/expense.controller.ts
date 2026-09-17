@@ -404,7 +404,7 @@ export const getExpenseById = asyncHandler(async (req: AuthRequest, res: Respons
 export const updateExpense = asyncHandler(async (req: AuthRequest, res: Response, next: NextFunction) => {
   const { id } = req.params;
   const userId = req.user!.id;
-  const updates = req.body;
+  const { description, amount, currency, category, date } = req.body;
 
   // Check if expense exists and belongs to user
   const expense = await prisma.expense.findFirst({
@@ -415,27 +415,33 @@ export const updateExpense = asyncHandler(async (req: AuthRequest, res: Response
     return next(new AppError('Expense not found', 404));
   }
 
-  // If category is being updated, learn from this correction
-  if (updates.category && updates.category !== expense.category) {
-    await updateCategoryMapping(userId, expense.description, updates.category);
-    
-    // Update confidence to 1.0 since user manually corrected
-    updates.confidence = 1.0;
-  }
+  const data: {
+    description?: string;
+    amount?: number;
+    currency?: string;
+    category?: string;
+    date?: Date;
+    confidence?: number;
+    updatedAt: Date;
+  } = { updatedAt: new Date() };
 
-  // Check if category was manually changed (for RAG learning)
-  const categoryChanged = updates.category && expense.category !== updates.category;
+  if (description !== undefined) data.description = String(description).trim();
+  if (amount !== undefined) data.amount = parseFloat(amount);
+  if (currency !== undefined) data.currency = String(currency).toUpperCase();
+  if (category !== undefined) data.category = String(category).trim();
+  if (date !== undefined) data.date = new Date(date);
+
+  const categoryChanged = data.category !== undefined && data.category !== expense.category;
   const oldCategory = expense.category;
 
-  // Update expense
+  if (categoryChanged) {
+    data.confidence = 1.0;
+    await updateCategoryMapping(userId, expense.description, data.category!);
+  }
+
   const updated = await prisma.expense.update({
     where: { id },
-    data: {
-      ...updates,
-      updatedAt: new Date(),
-      // If category manually changed, set confidence to 1.0 (user correction)
-      confidence: categoryChanged ? 1.0 : expense.confidence
-    }
+    data
   });
 
   // If category was manually changed, teach RAG system
@@ -462,7 +468,7 @@ export const updateExpense = asyncHandler(async (req: AuthRequest, res: Response
   }
 
   // If description or category changed, update embedding
-  if (updates.description || updates.category) {
+  if (data.description !== undefined || data.category !== undefined) {
     storeExpenseEmbedding(updated).catch(err => {
       logger.error({ err, expenseId: updated.id }, 'Failed to update embedding');
     });
