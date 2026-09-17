@@ -260,14 +260,16 @@ export interface ParsedCategoryBudget {
 }
 
 /**
- * Parse natural language expenses into structured data using Gemini
+ * Parse natural language expenses into structured data using Gemini.
+ * `defaultDate` is the Quick Log picker day (YYYY-MM-DD). Callers also stamp
+ * that day after this returns so Gemini cannot replace it with "today".
  */
-export const parseExpenses = async (
+export async function parseExpenses(
   rawInput: string,
   userCurrency: string = 'USD',
   userContext: UserContext[] = [],
   defaultDate?: string
-): Promise<ParsedExpense[]> => {
+): Promise<ParsedExpense[]> {
   try {
     // Build rich context from user's history
     let contextHint = '';
@@ -355,7 +357,7 @@ Return JSON array of expenses:`;
     }
     throw new Error(`Failed to parse expenses: ${error.message}`);
   }
-};
+}
 
 export const parseCategoryBudgets = async (
   text: string,
