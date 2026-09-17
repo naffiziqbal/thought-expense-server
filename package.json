@@ -17,7 +17,8 @@
     "sync-catalog-db": "ts-node -r dotenv/config src/scripts/syncExpenseCatalogToProduction.ts",
     "sync-catalog-db:apply": "ts-node -r dotenv/config src/scripts/syncExpenseCatalogToProduction.ts --apply",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit"
   },
   "keywords": [
     "expense",
