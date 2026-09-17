@@ -18,13 +18,13 @@ import {
 } from '../utils/storage';
 
 // Generate JWT token
-const generateToken = (userId: string): string => {
+const generateToken = (userId: string, tokenVersion = 0): string => {
   const secret = process.env.JWT_SECRET as string;
   const options = {
     expiresIn: process.env.JWT_EXPIRES_IN || '7d'
   };
   
-  return jwt.sign({ id: userId }, secret, options as SignOptions);
+  return jwt.sign({ id: userId, ver: tokenVersion, purpose: 'access' }, secret, options as SignOptions);
 };
 
 // Generate password reset token (1 hour expiry)
@@ -76,7 +76,7 @@ export const signup = asyncHandler(async (req: AuthRequest, res: Response, next:
   });
 
   // Generate token
-  const token = generateToken(user.id);
+  const token = generateToken(user.id, 0);
 
   res.status(201).json({
     success: true,
@@ -113,11 +113,8 @@ export const login = asyncHandler(async (req: AuthRequest, res: Response, next: 
     return next(new AppError('Invalid email or password', 401));
   }
 
-  // Generate token
-  const token = generateToken(user.id);
-
-  // Remove password from response
-  const { password: _, profilePicture, ...rest } = user;
+  const { password: _, profilePicture, tokenVersion, ...rest } = user;
+  const token = generateToken(user.id, tokenVersion);
   const userWithoutPassword = {
     ...rest,
     profilePicture,
@@ -334,7 +331,7 @@ export const resetPassword = asyncHandler(async (req: AuthRequest, res: Response
 
   await prisma.user.update({
     where: { id: decoded.id },
-    data: { password: hashedPassword }
+    data: { password: hashedPassword, tokenVersion: { increment: 1 } }
   });
 
   res.json({
@@ -375,14 +372,18 @@ export const changePassword = asyncHandler(async (req: AuthRequest, res: Respons
   const salt = await bcrypt.genSalt(12);
   const hashedPassword = await bcrypt.hash(newPassword, salt);
 
-  await prisma.user.update({
+  const updated = await prisma.user.update({
     where: { id: userId },
-    data: { password: hashedPassword }
+    data: { password: hashedPassword, tokenVersion: { increment: 1 } },
+    select: { tokenVersion: true },
   });
+
+  const token = generateToken(userId, updated.tokenVersion);
 
   res.json({
     success: true,
     message: 'Password updated successfully.',
+    data: { token },
   });
 });
 

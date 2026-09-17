@@ -24,6 +24,7 @@ model User {
   subscriptionStore     String?   // play_store | app_store | promo
   pushEnabled           Boolean   @default(true)
   budgetAlertsEnabled   Boolean   @default(true)
+  tokenVersion          Int       @default(0)
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
 

@@ -5,6 +5,8 @@ import prisma from '../config/prisma';
 
 interface JwtPayload {
   id: string;
+  ver?: number;
+  purpose?: string;
 }
 
 export interface AuthRequest extends Request {
@@ -36,7 +38,10 @@ export const protect = async (req: AuthRequest, res: Response, next: NextFunctio
       // Verify token
       const decoded = jwt.verify(token, process.env.JWT_SECRET!) as JwtPayload;
 
-      // Get user from token
+      if (decoded.purpose === 'password_reset') {
+        return next(new AppError('Not authorized to access this route', 401));
+      }
+
       const user = await prisma.user.findUnique({
         where: { id: decoded.id },
         select: {
@@ -46,7 +51,8 @@ export const protect = async (req: AuthRequest, res: Response, next: NextFunctio
           profilePicture: true,
           currency: true,
           isPremium: true,
-          createdAt: true
+          createdAt: true,
+          tokenVersion: true,
         }
       });
 
@@ -54,7 +60,13 @@ export const protect = async (req: AuthRequest, res: Response, next: NextFunctio
         return next(new AppError('User no longer exists', 401));
       }
 
-      req.user = user;
+      const { tokenVersion, ...sessionUser } = user;
+      const tokenVer = typeof decoded.ver === 'number' ? decoded.ver : 0;
+      if (tokenVer !== tokenVersion) {
+        return next(new AppError('Not authorized to access this route', 401));
+      }
+
+      req.user = sessionUser;
       next();
     } catch (error) {
       return next(new AppError('Not authorized to access this route', 401));
