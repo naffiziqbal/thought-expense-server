@@ -1,5 +1,6 @@
 import type { Request, RequestHandler } from 'express';
 import rateLimit from 'express-rate-limit';
+import jwt from 'jsonwebtoken';
 import { RedisStore } from 'rate-limit-redis';
 import { getRedisClient } from '../config/redis';
 
@@ -10,11 +11,15 @@ const hold: {
   ai: RequestHandler;
   forgot: RequestHandler;
   otp: RequestHandler;
+  login: RequestHandler;
+  signup: RequestHandler;
 } = {
   general: passThrough,
   ai: passThrough,
   forgot: passThrough,
   otp: passThrough,
+  login: passThrough,
+  signup: passThrough,
 };
 
 const wrap = (name: keyof typeof hold): RequestHandler => {
@@ -22,17 +27,18 @@ const wrap = (name: keyof typeof hold): RequestHandler => {
   return handler;
 };
 
-/** Authenticated user id from JWT payload, else IP. Token is not verified here. */
+/** Authenticated user id from a verified JWT, else IP. */
 export const rateLimitKey = (req: Request): string => {
   const auth = req.headers.authorization;
-  if (auth?.startsWith('Bearer ')) {
+  const secret = process.env.JWT_SECRET;
+  if (secret && auth?.startsWith('Bearer ')) {
     try {
-      const payload = JSON.parse(
-        Buffer.from(auth.split(' ')[1].split('.')[1], 'base64url').toString('utf8')
-      );
-      if (payload?.id) return `user:${payload.id}`;
+      const token = auth.split(' ')[1];
+      const decoded = jwt.verify(token, secret) as { id?: string; purpose?: string };
+      if (decoded.purpose === 'password_reset') return `ip:${req.ip}`;
+      if (typeof decoded.id === 'string' && decoded.id) return `user:${decoded.id}`;
     } catch {
-      // malformed token: fall through to IP
+      // expired, forged, or malformed: fall through to IP
     }
   }
   return `ip:${req.ip}`;
@@ -73,6 +79,31 @@ export function initRateLimiters(): void {
     message: 'Too many attempts. Please try again later.',
   });
 
+  hold.login = rateLimit({
+    ...shared,
+    store: redisStore('login'),
+    windowMs: 15 * 60 * 1000,
+    max: 10,
+    skipSuccessfulRequests: true,
+    keyGenerator: (req) => `ip:${req.ip}`,
+    message: {
+      success: false,
+      message: 'Too many login attempts. Please try again in a few minutes.',
+    },
+  });
+
+  hold.signup = rateLimit({
+    ...shared,
+    store: redisStore('signup'),
+    windowMs: 15 * 60 * 1000,
+    max: 5,
+    keyGenerator: (req) => `ip:${req.ip}`,
+    message: {
+      success: false,
+      message: 'Too many signup attempts. Please try again in a few minutes.',
+    },
+  });
+
   if (process.env.NODE_ENV !== 'production') return;
 
   hold.general = rateLimit({
@@ -104,3 +135,5 @@ export const generalRateLimit: RequestHandler = wrap('general');
 export const aiRateLimit: RequestHandler = wrap('ai');
 export const forgotPasswordLimiter: RequestHandler = wrap('forgot');
 export const otpVerifyLimiter: RequestHandler = wrap('otp');
+export const loginLimiter: RequestHandler = wrap('login');
+export const signupLimiter: RequestHandler = wrap('signup');

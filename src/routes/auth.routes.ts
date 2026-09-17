@@ -1,6 +1,6 @@
 import express, { Router } from 'express';
 import { body } from 'express-validator';
-import { forgotPasswordLimiter, otpVerifyLimiter } from '../middleware/rateLimit';
+import { forgotPasswordLimiter, loginLimiter, otpVerifyLimiter, signupLimiter } from '../middleware/rateLimit';
 import {
   signup,
   login,
@@ -61,8 +61,8 @@ const changePasswordValidation = [
 ];
 
 // Routes
-router.post('/signup', signupValidation, validate, signup);
-router.post('/login', loginValidation, validate, login);
+router.post('/signup', signupLimiter, signupValidation, validate, signup);
+router.post('/login', loginLimiter, loginValidation, validate, login);
 router.get('/me', protect, getMe);
 router.patch('/profile', protect, updateProfileValidation, validate, updateProfile);
 router.post('/profile/picture', protect, avatarUpload.single('image'), uploadProfilePicture);
