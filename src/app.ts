@@ -1,5 +1,5 @@
 import path from "path";
-import express, { Request, Response } from "express";
+import express, { Express, Request, Response } from "express";
 import cors from "cors";
 import helmet from "helmet";
 import compression from "compression";
@@ -18,7 +18,7 @@ import notificationRoutes from "./routes/notification.routes";
 import recurringRuleRoutes from "./routes/recurringRule.routes";
 import { errorHandler } from "./middleware/error.middleware";
 
-const app = express();
+const app: Express = express();
 
 app.set("trust proxy", true);
 
