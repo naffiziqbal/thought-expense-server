@@ -1,6 +1,6 @@
 import prisma from '../config/prisma';
 import { generateEmbedding } from './gemini.service';
-import { upsertExpenseVector, querySimilarExpenses, deleteExpenseVector } from './pinecone.service';
+import { upsertExpenseVector, querySimilarExpenses, deleteExpenseVector, isPineconeReady } from './pinecone.service';
 import { logger } from '../config/logger';
 
 interface UserContextItem {
@@ -102,24 +102,25 @@ export const updateCategoryMapping = async (
  * Store expense embedding in vector database
  */
 export const storeExpenseEmbedding = async (expense: Expense): Promise<boolean> => {
+  if (!isPineconeReady()) return false;
   try {
     // Generate embedding from description + category
     const text = `${expense.description} ${expense.category}`;
     const embedding = await generateEmbedding(text);
 
-    // Upsert to Pinecone
+    const amount = Number(expense.amount);
     const upserted = await upsertExpenseVector(expense.id, embedding, {
       userId: expense.userId,
       description: expense.description,
       category: expense.category,
-      amount: expense.amount,
-      currency: expense.currency
+      amount: Number.isFinite(amount) ? amount : undefined,
+      currency: expense.currency,
     });
     if (!upserted) return false;
 
     // Store vector reference in database (upsert: re-embeds happen on expense edits)
     const vectorMetadata = {
-      embeddingModel: process.env.EMBEDDING_MODEL || 'embedding-001',
+      embeddingModel: process.env.EMBEDDING_MODEL || 'gemini-embedding-001',
       timestamp: new Date().toISOString()
     };
     await prisma.vector.upsert({
@@ -148,15 +149,21 @@ export const findSimilarExpenses = async (
   limit: number = 5
 ): Promise<SimilarExpense[]> => {
   try {
+    if (!isPineconeReady()) return [];
     // Generate embedding for query
     const embedding = await generateEmbedding(description);
 
     // Query Pinecone
     const results = await querySimilarExpenses(embedding, userId, limit);
 
-    // Fetch full expense details from database
-    const expenseIds = results.map((r: any) => r.metadata.expenseId);
-    
+    const expenseIds = [
+      ...new Set(
+        results
+          .map((r) => (typeof r.metadata?.expenseId === 'string' ? r.metadata.expenseId : r.id) || '')
+          .filter((id) => id.length > 0)
+      ),
+    ];
+
     if (expenseIds.length === 0) return [];
 
     const expenses = await prisma.expense.findMany({
@@ -177,10 +184,10 @@ export const findSimilarExpenses = async (
 
     // Add similarity scores
     return expenses.map(expense => {
-      const match = results.find((r: any) => r.metadata.expenseId === expense.id);
+      const match = results.find((r) => (r.metadata?.expenseId || r.id) === expense.id);
       return {
         ...expense,
-        similarity: match ? match.score : 0
+        similarity: match?.score ?? 0,
       };
     });
   } catch (error) {

@@ -1,6 +1,7 @@
 import { GoogleGenerativeAI, GenerativeModel } from '@google/generative-ai';
 import { findCategoryFromCatalog } from './categoryCatalog.service';
 import { logger } from '../config/logger';
+import { EMBEDDING_DIMENSIONS, isValidEmbedding } from './pinecone.service';
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || '');
 
@@ -105,7 +106,7 @@ export async function generateWithRetryAndFallback<T>(
 
   throw lastError;
 }
-const EMBEDDING_MODEL = process.env.EMBEDDING_MODEL || 'embedding-001';
+const EMBEDDING_MODEL = process.env.EMBEDDING_MODEL || 'gemini-embedding-001';
 
 /**
  * Run a text prompt against the insights model with retry + fallback.
@@ -486,6 +487,7 @@ Return JSON:
  * Uses full 3072-dimensional embeddings from gemini-embedding-001
  */
 export const generateEmbedding = async (text: string): Promise<number[]> => {
+  const input = text.replace(/\s+/g, ' ').trim().slice(0, 4000) || 'expense';
   const clients: Array<{ client: GoogleGenerativeAI; label: string }> = [
     { client: genAI, label: 'primary' },
   ];
@@ -495,10 +497,14 @@ export const generateEmbedding = async (text: string): Promise<number[]> => {
   for (const { client, label } of clients) {
     try {
       const model = client.getGenerativeModel({ model: EMBEDDING_MODEL });
-      const result = await model.embedContent(text);
-
-      // Return full 3072-dimensional embedding (Pinecone now supports this)
-      return result.embedding.values;
+      const result = await model.embedContent(input);
+      const values = result.embedding?.values;
+      if (!isValidEmbedding(values)) {
+        throw new Error(
+          `Embedding length ${Array.isArray(values) ? values.length : typeof values} != Pinecone dimension ${EMBEDDING_DIMENSIONS}`
+        );
+      }
+      return values as number[];
     } catch (error: any) {
       lastError = error;
       logger.error({ err: error, label }, 'Embedding generation error');

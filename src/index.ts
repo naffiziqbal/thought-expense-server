@@ -119,9 +119,13 @@ const startServer = async (): Promise<void> => {
     initRateLimiters();
     logger.info("Redis connected");
 
-    // Initialize Pinecone
-    await initPinecone();
-    logger.info("Pinecone initialized");
+    // Initialize Pinecone (optional: API still starts if the index is down)
+    const pineconeReady = await initPinecone();
+    if (pineconeReady) {
+      logger.info("Pinecone initialized");
+    } else {
+      logger.warn("Pinecone unavailable; similar expenses and semantic search are disabled");
+    }
 
     // Start background workers
     startParseWorkers();

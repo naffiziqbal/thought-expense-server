@@ -15,7 +15,8 @@
     "backup:prune": "node scripts/spaces-backup.js prune --dry-run",
     "backup:restore": "./scripts/restore-db.sh",
     "sync-catalog-db": "ts-node -r dotenv/config src/scripts/syncExpenseCatalogToProduction.ts",
-    "sync-catalog-db:apply": "ts-node -r dotenv/config src/scripts/syncExpenseCatalogToProduction.ts --apply"
+    "sync-catalog-db:apply": "ts-node -r dotenv/config src/scripts/syncExpenseCatalogToProduction.ts --apply",
+    "pinecone:backfill": "ts-node -r dotenv/config src/scripts/backfillPinecone.ts"
   },
   "keywords": [
     "expense",

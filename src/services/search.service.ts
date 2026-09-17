@@ -8,7 +8,7 @@
 
 import prisma from '../config/prisma';
 import { runParsingModel, extractJson, generateEmbedding } from './gemini.service';
-import { querySimilarExpenses } from './pinecone.service';
+import { querySimilarExpenses, isPineconeReady } from './pinecone.service';
 import { convertAmountsToCurrency } from './exchangeRate.service';
 import { logger } from '../config/logger';
 
@@ -107,15 +107,17 @@ export async function searchExpenses(
 
   // Signal A: semantic matches from Pinecone
   let semanticIds: string[] = [];
-  try {
-    const embedding = await generateEmbedding(parsed.semanticQuery);
-    const matches = await querySimilarExpenses(embedding, userId, 30);
-    semanticIds = matches
-      .filter((m: any) => (m.score ?? 0) >= 0.5)
-      .map((m: any) => m.metadata?.expenseId || m.id)
-      .filter(Boolean);
-  } catch (err) {
-    logger.warn({ err }, 'Semantic search unavailable, falling back to keyword only');
+  if (isPineconeReady()) {
+    try {
+      const embedding = await generateEmbedding(parsed.semanticQuery);
+      const matches = await querySimilarExpenses(embedding, userId, 30);
+      semanticIds = matches
+        .filter((m) => (m.score ?? 0) >= 0.5)
+        .map((m) => (typeof m.metadata?.expenseId === 'string' ? m.metadata.expenseId : m.id) || '')
+        .filter(Boolean);
+    } catch (err) {
+      logger.warn({ err }, 'Semantic search unavailable, falling back to keyword only');
+    }
   }
 
   // Signal B: keyword matches in Postgres
