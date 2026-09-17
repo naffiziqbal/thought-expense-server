@@ -1,4 +1,4 @@
-import { Errors, Index, Pinecone } from '@pinecone-database/pinecone';
+import { Index, Pinecone } from '@pinecone-database/pinecone';
 import { logger } from '../config/logger';
 
 /** Must match gemini-embedding-001 default output and the live index. */
@@ -30,9 +30,12 @@ export function pineconeIndexName(): string {
 }
 
 function isMissingIndexError(err: unknown): boolean {
-  if (err instanceof Errors.PineconeNotFoundError) return true;
+  const name = err instanceof Error ? err.name : '';
   const message = err instanceof Error ? err.message : String(err);
-  return /404|not found|does not exist/i.test(message);
+  return (
+    name === 'PineconeNotFoundError' ||
+    /404|not found|does not exist/i.test(message)
+  );
 }
 
 function sleep(ms: number): Promise<void> {
@@ -195,7 +198,7 @@ export const upsertExpenseVector = async (
   if (!expenseId) return false;
   if (!isValidEmbedding(embedding)) {
     logger.error(
-      { expenseId, got: Array.isArray(embedding) ? embedding.length : typeof embedding },
+      { expenseId, got: embedding.length, expected: EMBEDDING_DIMENSIONS },
       'Invalid embedding; skip Pinecone upsert'
     );
     return false;
@@ -223,7 +226,7 @@ export const querySimilarExpenses = async (
 ): Promise<Array<{ id?: string; score?: number; metadata?: Record<string, unknown> }>> => {
   if (!ready || !userId) return [];
   if (!isValidEmbedding(embedding)) {
-    logger.warn({ got: Array.isArray(embedding) ? embedding.length : typeof embedding }, 'Skip Pinecone query: bad embedding');
+    logger.warn({ got: embedding.length, expected: EMBEDDING_DIMENSIONS }, 'Skip Pinecone query: bad embedding');
     return [];
   }
   const k = Math.min(Math.max(1, Math.floor(topK) || 5), 100);
