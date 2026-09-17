@@ -2,9 +2,10 @@ import pino from 'pino';
 import pinoHttp from 'pino-http';
 
 const isProd = process.env.NODE_ENV === 'production';
+const isTest = process.env.NODE_ENV === 'test';
 
 export const logger = pino({
-  level: process.env.LOG_LEVEL || (isProd ? 'info' : 'debug'),
+  level: process.env.LOG_LEVEL || (isProd ? 'info' : isTest ? 'silent' : 'debug'),
   timestamp: pino.stdTimeFunctions.isoTime,
   redact: {
     paths: [
@@ -20,7 +21,7 @@ export const logger = pino({
     ],
     censor: '[Redacted]',
   },
-  ...(isProd
+  ...(isProd || isTest
     ? {}
     : {
         transport: {
