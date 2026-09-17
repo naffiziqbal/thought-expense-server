@@ -163,7 +163,7 @@ RULES:
    - "yesterday" → calculate yesterday's date
    - "last week", "3 days ago", "monday" → calculate the date
    - "january 15" → use that date from current year
-   - If no date mentioned, use TODAY
+   - If no date mentioned, use {{DEFAULT_DATE}}
 5. If currency is mentioned, use it; otherwise use USD
 6. Assign confidence score (0-1) based on clarity
 7. ALWAYS return an array, even for single expense
@@ -214,7 +214,7 @@ OUTPUT FORMAT (JSON array - MUST be array):
 CRITICAL: 
 - Parse ALL expenses from input
 - ALWAYS include date in ISO format (YYYY-MM-DD)
-- Today is ${new Date().toISOString().split('T')[0]}
+- The default date for this batch is {{DEFAULT_DATE}} — use it unless the input names a different date
 - Be SPECIFIC with categories
 Be precise. Return ONLY valid JSON array with ALL expenses found.`;
 
@@ -265,7 +265,8 @@ export interface ParsedCategoryBudget {
 export const parseExpenses = async (
   rawInput: string,
   userCurrency: string = 'USD',
-  userContext: UserContext[] = []
+  userContext: UserContext[] = [],
+  defaultDate?: string
 ): Promise<ParsedExpense[]> => {
   try {
     // Build rich context from user's history
@@ -281,12 +282,15 @@ export const parseExpenses = async (
       contextHint = '\n\nNO HISTORY: This is a new user. Suggest specific, meaningful categories.';
     }
 
-    const systemPromptWithContext = PARSING_SYSTEM_PROMPT.replace('{{USER_CONTEXT}}', contextHint);
+    const selectedDate = defaultDate || new Date().toISOString().split('T')[0];
+    const systemPromptWithContext = PARSING_SYSTEM_PROMPT
+      .replace('{{USER_CONTEXT}}', contextHint)
+      .replace(/\{\{DEFAULT_DATE\}\}/g, selectedDate);
 
     const userPrompt = `${systemPromptWithContext}
 
 Default currency: ${userCurrency}
-Current date: ${new Date().toISOString().split('T')[0]}
+Default date: ${selectedDate}
 
 Parse this expense input:
 """
@@ -297,6 +301,7 @@ REMEMBER:
 - Suggest SPECIFIC categories (not generic)
 - Use user's patterns for consistency
 - Return ALL expenses as JSON array
+- Use ${selectedDate} for every expense unless the text names a different date
 
 Return JSON array of expenses:`;
 
@@ -336,7 +341,7 @@ Return JSON array of expenses:`;
         currency: String(exp.currency || userCurrency).toUpperCase(),
         category: catalogCategory || aiCategory,
         confidence: catalogCategory ? 0.99 : (parseFloat(exp.confidence) || 0.5),
-        date: exp.date || new Date().toISOString().split('T')[0],
+        date: exp.date || selectedDate,
         rawInput: exp.rawInput || rawInput
       };
     });

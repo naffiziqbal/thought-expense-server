@@ -35,7 +35,8 @@ const parseExpensesValidation = [
     .withMessage('Raw input must be a string')
     .isLength({ max: 5000 })
     .withMessage('Input too long (max 5000 characters)'),
-  body('create').optional().isBoolean()
+  body('create').optional().isBoolean(),
+  body('date').optional().isISO8601().withMessage('Invalid date format'),
 ];
 
 const createExpenseValidation = [

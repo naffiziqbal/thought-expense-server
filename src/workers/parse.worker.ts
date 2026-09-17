@@ -15,7 +15,7 @@ import {
 } from '../queues/expenseParse.queue';
 import { queueConnection } from '../queues/queue.connection';
 import { parseCategoryBudgets, parseExpenses } from '../services/gemini.service';
-import { persistParsedExpenses } from '../services/expenseParse.service';
+import { persistParsedExpenses, applySelectedExpenseDate, resolveSelectedExpenseDate } from '../services/expenseParse.service';
 import { getUserContext, updateCategoryMapping } from '../services/rag.service';
 import { withIdempotency } from '../services/idempotency.service';
 import { logger } from '../config/logger';
@@ -84,14 +84,21 @@ export const startParseWorkers = () => {
     expenseWorker = new Worker<ExpenseParseJobData, ExpenseParseJobResult>(
       EXPENSE_PARSE_QUEUE,
       async (job: Job<ExpenseParseJobData>) => {
-        const { userId, rawInput, create, userCurrency, localPreview } = job.data;
+        const { userId, rawInput, create, userCurrency, localPreview, date } = job.data;
         const jobKey = String(job.id);
-        const fallback = previewToParsed(localPreview || [], userCurrency, rawInput);
+        const selectedDate = date || resolveSelectedExpenseDate({ date, localPreview });
+        const fallback = applySelectedExpenseDate(
+          previewToParsed(localPreview || [], userCurrency, rawInput),
+          selectedDate
+        );
 
         let parsedExpenses;
         try {
           const userContext = await getUserContext(userId);
-          parsedExpenses = await parseExpenses(rawInput, userCurrency, userContext);
+          parsedExpenses = applySelectedExpenseDate(
+            await parseExpenses(rawInput, userCurrency, userContext, selectedDate),
+            selectedDate
+          );
         } catch (err) {
           if (isLastAttempt(job) && create && fallback.length > 0) {
             logger.warn({ jobId: job.id, err }, 'Parse exhausted retries; persisting local preview');

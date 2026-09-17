@@ -9,7 +9,7 @@ import { convertAmountsToCurrency } from '../services/exchangeRate.service';
 import { setCache, getCache, deleteCache, deleteCachePattern } from '../config/redis';
 import { AuthRequest } from '../middleware/auth.middleware';
 import { expenseParseQueue } from '../queues/expenseParse.queue';
-import { persistParsedExpenses } from '../services/expenseParse.service';
+import { persistParsedExpenses, resolveSelectedExpenseDate, applySelectedExpenseDate } from '../services/expenseParse.service';
 import { detectRecurring } from '../services/recurring.service';
 import { checkBudgetAndNotify } from '../services/budgetAlert.service';
 import { logger } from '../config/logger';
@@ -22,6 +22,7 @@ export const parseAndCreateExpenses = asyncHandler(async (req: AuthRequest, res:
   const { rawInput, create = true } = req.body;
   const userId = req.user!.id;
   const idempotencyKey = idempotencyKeyFromRequest(req.headers['idempotency-key']);
+  const selectedDate = resolveSelectedExpenseDate(req.body);
 
   const payload = await withIdempotency(
     'expenses-parse',
@@ -29,7 +30,10 @@ export const parseAndCreateExpenses = asyncHandler(async (req: AuthRequest, res:
     idempotencyKey,
     async () => {
       const userContext = await getUserContext(userId);
-      const parsedExpenses = await parseExpenses(rawInput, req.user!.currency, userContext);
+      const parsedExpenses = applySelectedExpenseDate(
+        await parseExpenses(rawInput, req.user!.currency, userContext, selectedDate),
+        selectedDate
+      );
 
       if (!parsedExpenses || parsedExpenses.length === 0) {
         throw new AppError('Could not parse any expenses from input', 400);
@@ -71,6 +75,7 @@ export const enqueueParseAndCreateExpenses = asyncHandler(async (req: AuthReques
   const { rawInput, create = true } = req.body as { rawInput: string; create?: boolean };
   const userId = req.user!.id;
   const idempotencyKey = idempotencyKeyFromRequest(req.headers['idempotency-key']);
+  const selectedDate = resolveSelectedExpenseDate(req.body);
 
   const payload = await withIdempotency(
     'expenses-parse-async',
@@ -89,6 +94,7 @@ export const enqueueParseAndCreateExpenses = asyncHandler(async (req: AuthReques
             rawInput,
             create: create !== false,
             userCurrency: req.user!.currency || 'USD',
+            date: selectedDate,
             localPreview: Array.isArray(req.body.localPreview) ? req.body.localPreview : undefined,
             clientBatchId: typeof req.body.clientBatchId === 'string' ? req.body.clientBatchId : undefined,
           },

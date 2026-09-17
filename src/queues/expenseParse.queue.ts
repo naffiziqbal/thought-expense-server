@@ -17,6 +17,8 @@ export interface ExpenseParseJobData {
   rawInput: string;
   create: boolean;
   userCurrency: string;
+  /** YYYY-MM-DD from the Quick Log date picker. Overrides Gemini's "today". */
+  date?: string;
   localPreview?: LocalPreviewExpense[];
   clientBatchId?: string;
 }
