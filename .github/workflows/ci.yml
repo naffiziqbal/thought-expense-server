@@ -2,8 +2,11 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [dev, main]
   pull_request:
+
+permissions:
+  contents: read
 
 jobs:
   test:
@@ -59,3 +62,61 @@ jobs:
 
       - name: Test
         run: pnpm test
+
+  merge-to-main:
+    name: Merge dev into main
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: main
+
+      - name: Fast-forward main to passing dev
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin dev
+          git merge --ff-only origin/dev
+          git push origin main
+
+  deploy:
+    name: Build on VPS
+    needs: [test, merge-to-main]
+    if: |
+      always() &&
+      github.event_name == 'push' &&
+      needs.test.result == 'success' &&
+      (
+        (github.ref == 'refs/heads/dev' && needs.merge-to-main.result == 'success') ||
+        (github.ref == 'refs/heads/main' && needs.merge-to-main.result == 'skipped')
+      )
+    runs-on: ubuntu-latest
+    steps:
+      - name: Pull, generate, and build on VPS
+        uses: appleboy/ssh-action@v0.1.8
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.USERNAME }}
+          password: ${{ secrets.VPS_PASSWORD }}
+          port: 22
+          script_stop: true
+          command_timeout: 15m
+          script: |
+            set -euo pipefail
+            cd /var/www/personal/thoughtExpense/thought-expense-server
+            git fetch origin main
+            git checkout main
+            git pull --ff-only origin main
+            pnpm install --frozen-lockfile
+            pnpm prisma generate
+            pnpm build
+            if command -v pm2 >/dev/null 2>&1; then
+              pm2 restart thoughtexpense-server || pm2 restart all
+            else
+              echo "Build finished. Restart the Node process on the VPS if it does not pick up dist/."
+            fi
