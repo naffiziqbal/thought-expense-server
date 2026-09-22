@@ -11,7 +11,9 @@ import { asyncHandler } from '../middleware/error.middleware';
 import { AppError } from '../middleware/error.middleware';
 import { AuthRequest } from '../middleware/auth.middleware';
 import { logger } from '../config/logger';
-import { uploadToSpace, deleteFromSpace, getFullUrl } from '../utils/storage';
+import { uploadToSpace, deleteFromSpace } from '../utils/storage';
+import { authUserSelect, formatAuthUser } from '../utils/authUser.util';
+import { refreshStalePremium } from '../utils/subscription.util';
 
 // Generate JWT token
 const generateToken = (userId: string, tokenVersion = 0): string => {
@@ -62,15 +64,7 @@ export const signup = asyncHandler(async (req: AuthRequest, res: Response, next:
       name: name || null,
       currency: currency || 'USD',
     },
-    select: {
-      id: true,
-      email: true,
-      name: true,
-      profilePicture: true,
-      currency: true,
-      isPremium: true,
-      createdAt: true,
-    },
+    select: authUserSelect,
   });
 
   // Generate token
@@ -80,10 +74,7 @@ export const signup = asyncHandler(async (req: AuthRequest, res: Response, next:
     success: true,
     message: 'User registered successfully',
     data: {
-      user: {
-        ...user,
-        profilePictureUrl: user.profilePicture ? getFullUrl(user.profilePicture) : null,
-      },
+      user: formatAuthUser(user),
       token,
     },
   });
@@ -111,20 +102,30 @@ export const login = asyncHandler(async (req: AuthRequest, res: Response, next: 
     return next(new AppError('Invalid email or password', 401));
   }
 
-  const { password: _, profilePicture, tokenVersion, ...rest } = user;
+  const { password: _, tokenVersion, ...rest } = user;
   const token = generateToken(user.id, tokenVersion);
-  const userWithoutPassword = {
-    ...rest,
-    profilePicture,
-    profilePictureUrl: profilePicture ? getFullUrl(profilePicture) : null,
-    isPremium: user.isPremium,
-  };
+  const billing = await refreshStalePremium(user.id, {
+    isPremium: rest.isPremium,
+    premiumSince: rest.premiumSince,
+    premiumUntil: rest.premiumUntil,
+    subscriptionStatus: rest.subscriptionStatus,
+    subscriptionProductId: rest.subscriptionProductId,
+    subscriptionStore: rest.subscriptionStore,
+  });
 
   res.json({
     success: true,
     message: 'Login successful',
     data: {
-      user: userWithoutPassword,
+      user: formatAuthUser({
+        id: rest.id,
+        email: rest.email,
+        name: rest.name,
+        profilePicture: rest.profilePicture,
+        currency: rest.currency,
+        createdAt: rest.createdAt,
+        ...billing,
+      }),
       token,
     },
   });
@@ -134,16 +135,25 @@ export const login = asyncHandler(async (req: AuthRequest, res: Response, next: 
 // @route   GET /api/auth/me
 // @access  Private
 export const getMe = asyncHandler(async (req: AuthRequest, res: Response) => {
-  const user = req.user!;
-  const userWithUrl = {
-    ...user,
-    profilePictureUrl: user.profilePicture ? getFullUrl(user.profilePicture) : null,
-    isPremium: user.isPremium ?? false,
-  };
+  const row = await prisma.user.findUnique({
+    where: { id: req.user!.id },
+    select: authUserSelect,
+  });
+  if (!row) {
+    throw new AppError('User no longer exists', 404);
+  }
+  const billing = await refreshStalePremium(row.id, {
+    isPremium: row.isPremium,
+    premiumSince: row.premiumSince,
+    premiumUntil: row.premiumUntil,
+    subscriptionStatus: row.subscriptionStatus,
+    subscriptionProductId: row.subscriptionProductId,
+    subscriptionStore: row.subscriptionStore,
+  });
   res.json({
     success: true,
     data: {
-      user: userWithUrl,
+      user: formatAuthUser({ ...row, ...billing }),
     },
   });
 });
@@ -181,25 +191,23 @@ export const updateProfile = asyncHandler(
     const user = await prisma.user.update({
       where: { id: userId },
       data: updateData,
-      select: {
-        id: true,
-        email: true,
-        name: true,
-        profilePicture: true,
-        currency: true,
-        isPremium: true,
-        createdAt: true,
-      },
+      select: authUserSelect,
+    });
+
+    const billing = await refreshStalePremium(userId, {
+      isPremium: user.isPremium,
+      premiumSince: user.premiumSince,
+      premiumUntil: user.premiumUntil,
+      subscriptionStatus: user.subscriptionStatus,
+      subscriptionProductId: user.subscriptionProductId,
+      subscriptionStore: user.subscriptionStore,
     });
 
     res.json({
       success: true,
       message: 'Profile updated',
       data: {
-        user: {
-          ...user,
-          profilePictureUrl: user.profilePicture ? getFullUrl(user.profilePicture) : null,
-        },
+        user: formatAuthUser({ ...user, ...billing }),
       },
     });
   }
@@ -237,25 +245,23 @@ export const uploadProfilePicture = asyncHandler(
     const user = await prisma.user.update({
       where: { id: userId },
       data: { profilePicture: storedPath },
-      select: {
-        id: true,
-        email: true,
-        name: true,
-        profilePicture: true,
-        currency: true,
-        isPremium: true,
-        createdAt: true,
-      },
+      select: authUserSelect,
+    });
+
+    const billing = await refreshStalePremium(userId, {
+      isPremium: user.isPremium,
+      premiumSince: user.premiumSince,
+      premiumUntil: user.premiumUntil,
+      subscriptionStatus: user.subscriptionStatus,
+      subscriptionProductId: user.subscriptionProductId,
+      subscriptionStore: user.subscriptionStore,
     });
 
     res.json({
       success: true,
       message: 'Profile picture updated',
       data: {
-        user: {
-          ...user,
-          profilePictureUrl: getFullUrl(user.profilePicture),
-        },
+        user: formatAuthUser({ ...user, ...billing }),
       },
     });
   }

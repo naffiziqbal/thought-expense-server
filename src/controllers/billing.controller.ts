@@ -4,6 +4,7 @@ import { asyncHandler, AppError } from '../middleware/error.middleware';
 import { AuthRequest } from '../middleware/auth.middleware';
 import { logger } from '../config/logger';
 import { setCacheNx, deleteCache } from '../config/redis';
+import { buildSubscriptionSummary, refreshStalePremium, billingFieldsSelect } from '../utils/subscription.util';
 
 /**
  * RevenueCat webhook -> keep User.isPremium/premiumUntil in sync with the
@@ -121,32 +122,29 @@ export const revenuecatWebhook = asyncHandler(async (req: AuthRequest, res: Resp
 // @route   GET /api/billing/status
 // @access  Private
 export const getBillingStatus = asyncHandler(async (req: AuthRequest, res: Response) => {
-  let user = await prisma.user.findUnique({
+  const row = await prisma.user.findUnique({
     where: { id: req.user!.id },
-    select: {
-      isPremium: true,
-      premiumSince: true,
-      premiumUntil: true,
-      subscriptionStatus: true,
-      subscriptionProductId: true,
-      subscriptionStore: true,
-    },
+    select: billingFieldsSelect,
   });
 
-  if (user?.isPremium && user.premiumUntil && user.premiumUntil.getTime() < Date.now()) {
-    user = await prisma.user.update({
-      where: { id: req.user!.id },
-      data: { isPremium: false, subscriptionStatus: 'expired' },
-      select: {
-        isPremium: true,
-        premiumSince: true,
-        premiumUntil: true,
-        subscriptionStatus: true,
-        subscriptionProductId: true,
-        subscriptionStore: true,
-      },
-    });
+  if (!row) {
+    res.json({ success: true, data: null });
+    return;
   }
 
-  res.json({ success: true, data: user });
+  const user = await refreshStalePremium(req.user!.id, row);
+  const subscription = buildSubscriptionSummary(user);
+
+  res.json({
+    success: true,
+    data: {
+      isPremium: user.isPremium,
+      premiumSince: user.premiumSince,
+      premiumUntil: user.premiumUntil,
+      subscriptionStatus: user.subscriptionStatus,
+      subscriptionProductId: user.subscriptionProductId,
+      subscriptionStore: user.subscriptionStore,
+      subscription,
+    },
+  });
 });

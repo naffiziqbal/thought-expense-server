@@ -95,5 +95,9 @@ describe('GET /api/auth/me', () => {
     expect(res.status).toBe(200);
     expect(res.body.data.user.id).toBe(account.user.id);
     expect(res.body.data.user.email).toBe(account.email.toLowerCase());
+    expect(res.body.data.user.subscription).toMatchObject({
+      plan: null,
+      summaryLine: null,
+    });
   });
 });
