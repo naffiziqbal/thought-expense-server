@@ -40,8 +40,17 @@ const generatePasswordResetToken = (userId: string, email: string): string => {
 // @desc    Register a new user
 // @route   POST /api/auth/signup
 // @access  Public
+function normalizeEmail(raw: unknown): string {
+  return typeof raw === 'string' ? raw.trim().toLowerCase() : '';
+}
+
 export const signup = asyncHandler(async (req: AuthRequest, res: Response, next: NextFunction) => {
-  const { email, password, name, currency } = req.body;
+  const email = normalizeEmail(req.body?.email);
+  const { password, name, currency } = req.body;
+
+  if (!email) {
+    return next(new AppError('Email is required', 400));
+  }
 
   // Check if user already exists
   const existingUser = await prisma.user.findUnique({
@@ -84,7 +93,12 @@ export const signup = asyncHandler(async (req: AuthRequest, res: Response, next:
 // @route   POST /api/auth/login
 // @access  Public
 export const login = asyncHandler(async (req: AuthRequest, res: Response, next: NextFunction) => {
-  const { email, password } = req.body;
+  const email = normalizeEmail(req.body?.email);
+  const password = req.body?.password;
+
+  if (!email || typeof password !== 'string') {
+    return next(new AppError('Invalid email or password', 401));
+  }
 
   // Find user
   const user = await prisma.user.findUnique({

@@ -2,6 +2,7 @@ import { GoogleGenerativeAI, GenerativeModel } from '@google/generative-ai';
 import { findCategoryFromCatalog } from './categoryCatalog.service';
 import { logger } from '../config/logger';
 import { EMBEDDING_DIMENSIONS, isValidEmbedding } from './pinecone.service';
+import { recordAiFallback, recordAiUsage, type AiMetricKind } from './aiMetrics.service';
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || '');
 
@@ -92,11 +93,15 @@ export async function generateWithRetryAndFallback<T>(
         }
         if (!isRetryableError(err) || attempt === maxRetries) break;
         const delay = (attempt + 1) * 1500;
-        logger.warn({ err, label, model, attempt: attempt + 1, delay }, 'Gemini attempt failed, retrying');
+        logger.warn(
+          { err, label, model, attempt: attempt + 1, delay },
+          'Gemini attempt failed, retrying'
+        );
         await sleep(delay);
       }
     }
     if (i < attempts.length - 1) {
+      void recordAiFallback();
       logger.warn(
         { from: `${label}/${model}`, to: `${attempts[i + 1].label}/${attempts[i + 1].model}` },
         'Switching Gemini model after failure'
@@ -112,7 +117,11 @@ const EMBEDDING_MODEL = process.env.EMBEDDING_MODEL || 'gemini-embedding-001';
  * Run a text prompt against the insights model with retry + fallback.
  * Shared by the advisor/briefing/search services.
  */
-export const runInsightsModel = async (prompt: string): Promise<string> => {
+export const runInsightsModel = async (
+  prompt: string,
+  metricKind: AiMetricKind = 'insights'
+): Promise<string> => {
+  void recordAiUsage(metricKind);
   const fallbacks = ['gemini-2.0-flash', 'gemini-1.5-flash', 'gemini-1.5-pro'];
   const modelsToTry = [INSIGHTS_MODEL, ...fallbacks.filter((m) => m !== INSIGHTS_MODEL)];
   return generateWithRetryAndFallback(modelsToTry, async (model) => {
@@ -124,8 +133,15 @@ export const runInsightsModel = async (prompt: string): Promise<string> => {
 /**
  * Run a text prompt against the (fast) parsing model with retry + fallback.
  */
-export const runParsingModel = async (prompt: string): Promise<string> => {
-  const modelsToTry = [PARSING_MODEL, ...PARSING_FALLBACK_MODELS.filter((m) => m !== PARSING_MODEL)];
+export const runParsingModel = async (
+  prompt: string,
+  metricKind: AiMetricKind = 'parse'
+): Promise<string> => {
+  void recordAiUsage(metricKind);
+  const modelsToTry = [
+    PARSING_MODEL,
+    ...PARSING_FALLBACK_MODELS.filter((m) => m !== PARSING_MODEL),
+  ];
   return generateWithRetryAndFallback(modelsToTry, async (model) => {
     const result = await model.generateContent(prompt);
     return result.response.text();
@@ -134,12 +150,16 @@ export const runParsingModel = async (prompt: string): Promise<string> => {
 
 /** Strip markdown fences and extract the first JSON object/array from a model reply. */
 export const extractJson = (raw: string): any => {
-  let text = raw.trim().replace(/```json\n?/g, '').replace(/```\n?/g, '');
+  let text = raw
+    .trim()
+    .replace(/```json\n?/g, '')
+    .replace(/```\n?/g, '');
   const arrayMatch = text.match(/\[[\s\S]*\]/);
   const objectMatch = text.match(/\{[\s\S]*\}/);
   // Prefer whichever structure starts first in the reply
   if (arrayMatch && objectMatch) {
-    text = text.indexOf(arrayMatch[0]) <= text.indexOf(objectMatch[0]) ? arrayMatch[0] : objectMatch[0];
+    text =
+      text.indexOf(arrayMatch[0]) <= text.indexOf(objectMatch[0]) ? arrayMatch[0] : objectMatch[0];
   } else if (arrayMatch) {
     text = arrayMatch[0];
   } else if (objectMatch) {
@@ -269,26 +289,30 @@ export async function parseExpenses(
   rawInput: string,
   userCurrency: string = 'USD',
   userContext: UserContext[] = [],
-  defaultDate?: string
+  defaultDate?: string,
+  metricKind: AiMetricKind = 'parse'
 ): Promise<ParsedExpense[]> {
   try {
+    void recordAiUsage(metricKind);
     // Build rich context from user's history
     let contextHint = '';
     if (userContext.length > 0) {
-      contextHint = '\n\nUSER\'S CATEGORY HISTORY (learn from this):\n';
-      userContext.forEach(c => {
+      contextHint = "\n\nUSER'S CATEGORY HISTORY (learn from this):\n";
+      userContext.forEach((c) => {
         const usage = c.confidence ? Math.round(c.confidence * 10) : 1;
         contextHint += `  - "${c.keyword}" → "${c.category}" (used ${usage}x)\n`;
       });
-      contextHint += '\nUse these patterns for CONSISTENCY. If similar expense exists, use same category.';
+      contextHint +=
+        '\nUse these patterns for CONSISTENCY. If similar expense exists, use same category.';
     } else {
       contextHint = '\n\nNO HISTORY: This is a new user. Suggest specific, meaningful categories.';
     }
 
     const selectedDate = defaultDate || new Date().toISOString().split('T')[0];
-    const systemPromptWithContext = PARSING_SYSTEM_PROMPT
-      .replace('{{USER_CONTEXT}}', contextHint)
-      .replace(/\{\{DEFAULT_DATE\}\}/g, selectedDate);
+    const systemPromptWithContext = PARSING_SYSTEM_PROMPT.replace(
+      '{{USER_CONTEXT}}',
+      contextHint
+    ).replace(/\{\{DEFAULT_DATE\}\}/g, selectedDate);
 
     const userPrompt = `${systemPromptWithContext}
 
@@ -308,7 +332,10 @@ REMEMBER:
 
 Return JSON array of expenses:`;
 
-    const modelsToTry = [PARSING_MODEL, ...PARSING_FALLBACK_MODELS.filter((m) => m !== PARSING_MODEL)];
+    const modelsToTry = [
+      PARSING_MODEL,
+      ...PARSING_FALLBACK_MODELS.filter((m) => m !== PARSING_MODEL),
+    ];
 
     const responseText = await generateWithRetryAndFallback(modelsToTry, async (model) => {
       const result = await model.generateContent(userPrompt);
@@ -317,10 +344,10 @@ Return JSON array of expenses:`;
 
     // Extract JSON from response
     let jsonText = responseText.trim();
-    
+
     // Remove markdown code blocks
     jsonText = jsonText.replace(/```json\n?/g, '').replace(/```\n?/g, '');
-    
+
     // Try to find JSON array
     const arrayMatch = jsonText.match(/\[[\s\S]*\]/);
     if (arrayMatch) {
@@ -328,12 +355,12 @@ Return JSON array of expenses:`;
     }
 
     const parsed = JSON.parse(jsonText);
-    
+
     // Ensure it's an array
     const expenses = Array.isArray(parsed) ? parsed : [parsed];
 
     // Validate and normalize. Use fixed catalog category when there's a strong match.
-    return expenses.map(exp => {
+    return expenses.map((exp) => {
       const description = String(exp.description || '').trim();
       const aiCategory = String(exp.category || 'Other').trim();
       const catalogCategory = findCategoryFromCatalog(description);
@@ -343,18 +370,15 @@ Return JSON array of expenses:`;
         amount: parseFloat(exp.amount) || 0,
         currency: String(exp.currency || userCurrency).toUpperCase(),
         category: catalogCategory || aiCategory,
-        confidence: catalogCategory ? 0.99 : (parseFloat(exp.confidence) || 0.5),
+        confidence: catalogCategory ? 0.99 : parseFloat(exp.confidence) || 0.5,
         date: exp.date || selectedDate,
-        rawInput: exp.rawInput || rawInput
+        rawInput: exp.rawInput || rawInput,
       };
     });
-
   } catch (error: any) {
     logger.error({ err: error }, 'Gemini parsing error');
     if (isRetryableError(error)) {
-      throw new Error(
-        'Our AI service is temporarily busy. Please try again in a moment.'
-      );
+      throw new Error('Our AI service is temporarily busy. Please try again in a moment.');
     }
     throw new Error(`Failed to parse expenses: ${error.message}`);
   }
@@ -365,6 +389,7 @@ export const parseCategoryBudgets = async (
   knownCategories: string[] = []
 ): Promise<ParsedCategoryBudget[]> => {
   try {
+    void recordAiUsage('budget_category');
     const categoriesHint = knownCategories.length
       ? `Known categories: ${knownCategories.join(', ')}`
       : 'Known categories: Groceries, Health, Medical, Rent, Transport, Entertainment, Utilities, Education, Shopping, Other';
@@ -391,14 +416,18 @@ Rules:
 - Ignore unrelated text.
 `;
 
-    const modelsToTry = [PARSING_MODEL, ...PARSING_FALLBACK_MODELS.filter((m) => m !== PARSING_MODEL)];
+    const modelsToTry = [
+      PARSING_MODEL,
+      ...PARSING_FALLBACK_MODELS.filter((m) => m !== PARSING_MODEL),
+    ];
 
     const rawText = await generateWithRetryAndFallback(modelsToTry, async (model) => {
       const result = await model.generateContent(prompt);
       return result.response.text();
     });
 
-    let jsonText = rawText.trim()
+    let jsonText = rawText
+      .trim()
       .replace(/```json\n?/g, '')
       .replace(/```\n?/g, '');
 
@@ -433,8 +462,8 @@ export const suggestCategory = async (
   try {
     let contextHint = '';
     if (userContext.length > 0) {
-      contextHint = 'User\'s past patterns:\n';
-      userContext.slice(0, 10).forEach(c => {
+      contextHint = "User's past patterns:\n";
+      userContext.slice(0, 10).forEach((c) => {
         contextHint += `- "${c.keyword}" → "${c.category}"\n`;
       });
     }
@@ -458,26 +487,28 @@ Return JSON:
   "alternatives": ["Alternative 1", "Alternative 2"]
 }`;
 
-    const modelsToTry = [PARSING_MODEL, ...PARSING_FALLBACK_MODELS.filter((m) => m !== PARSING_MODEL)];
+    const modelsToTry = [
+      PARSING_MODEL,
+      ...PARSING_FALLBACK_MODELS.filter((m) => m !== PARSING_MODEL),
+    ];
 
     const rawText = await generateWithRetryAndFallback(modelsToTry, async (model) => {
       const result = await model.generateContent(prompt);
       return result.response.text();
     });
     let jsonText = rawText.trim();
-    
+
     // Remove markdown
     jsonText = jsonText.replace(/```json\n?/g, '').replace(/```\n?/g, '');
-    
+
     const parsed = JSON.parse(jsonText);
     return parsed;
-
   } catch (error: any) {
     logger.error({ err: error }, 'Category suggestion error');
     return {
       category: 'Other',
       confidence: 0.5,
-      alternatives: []
+      alternatives: [],
     };
   }
 };
@@ -487,6 +518,7 @@ Return JSON:
  * Uses full 3072-dimensional embeddings from gemini-embedding-001
  */
 export const generateEmbedding = async (text: string): Promise<number[]> => {
+  void recordAiUsage('embedding');
   const input = text.replace(/\s+/g, ' ').trim().slice(0, 4000) || 'expense';
   const clients: Array<{ client: GoogleGenerativeAI; label: string }> = [
     { client: genAI, label: 'primary' },
@@ -494,7 +526,8 @@ export const generateEmbedding = async (text: string): Promise<number[]> => {
   if (backupAI) clients.push({ client: backupAI, label: 'backup' });
 
   let lastError: any;
-  for (const { client, label } of clients) {
+  for (let i = 0; i < clients.length; i++) {
+    const { client, label } = clients[i];
     try {
       const model = client.getGenerativeModel({ model: EMBEDDING_MODEL });
       const result = await model.embedContent(input);
@@ -508,6 +541,7 @@ export const generateEmbedding = async (text: string): Promise<number[]> => {
     } catch (error: any) {
       lastError = error;
       logger.error({ err: error, label }, 'Embedding generation error');
+      if (i < clients.length - 1) void recordAiFallback();
     }
   }
   throw new Error(`Failed to generate embedding: ${lastError?.message}`);
@@ -526,9 +560,12 @@ export const generateInsights = async (
       return ['No expenses to analyze yet. Start tracking to get insights!'];
     }
 
-    const expenseList = expenses.slice(0, 50).map(e =>
-      `${e.description} (${e.category}): ${e.amount} ${e.currency}`
-    ).join('\n');
+    void recordAiUsage('insights');
+
+    const expenseList = expenses
+      .slice(0, 50)
+      .map((e) => `${e.description} (${e.category}): ${e.amount} ${e.currency}`)
+      .join('\n');
 
     const prompt = `${INSIGHT_SYSTEM_PROMPT}
 
@@ -554,13 +591,12 @@ Return as JSON array of strings:
       return result.response.text();
     });
     let jsonText = rawText.trim();
-    
+
     // Remove markdown
     jsonText = jsonText.replace(/```json\n?/g, '').replace(/```\n?/g, '');
-    
+
     const insights = JSON.parse(jsonText);
     return Array.isArray(insights) ? insights : [insights];
-
   } catch (error: any) {
     logger.error({ err: error }, 'Insight generation error');
     return ['Unable to generate insights at this time.'];
@@ -576,6 +612,7 @@ export const extractReceiptText = async (
   imageBase64: string,
   mimeType: string
 ): Promise<string> => {
+  void recordAiUsage('ocr');
   const prompt = `You are reading a photo of a receipt, invoice, or a handwritten/printed list of expenses.
 Extract every purchasable line item with its price.
 
@@ -587,7 +624,10 @@ OUTPUT RULES:
   If only a grand total is readable, output one line: "<store name> <total>"
 - If the image contains no readable expenses, output exactly: NONE`;
 
-  const modelsToTry = [PARSING_MODEL, ...PARSING_FALLBACK_MODELS.filter((m) => m !== PARSING_MODEL)];
+  const modelsToTry = [
+    PARSING_MODEL,
+    ...PARSING_FALLBACK_MODELS.filter((m) => m !== PARSING_MODEL),
+  ];
 
   const text = await generateWithRetryAndFallback(modelsToTry, async (model) => {
     const result = await model.generateContent([

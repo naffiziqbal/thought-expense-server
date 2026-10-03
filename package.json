@@ -16,6 +16,7 @@
     "backup:restore": "./scripts/restore-db.sh",
     "sync-catalog-db": "ts-node -r dotenv/config src/scripts/syncExpenseCatalogToProduction.ts",
     "sync-catalog-db:apply": "ts-node -r dotenv/config src/scripts/syncExpenseCatalogToProduction.ts --apply",
+    "admin:create": "ts-node -r dotenv/config src/scripts/createAdmin.ts",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",

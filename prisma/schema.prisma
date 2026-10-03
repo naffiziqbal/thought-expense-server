@@ -36,8 +36,58 @@ model User {
   goals            Goal[]
   deviceTokens     DeviceToken[]
   recurringRules   RecurringRule[]
+  billingWebhookEvents BillingWebhookEvent[]
 
   @@index([email])
+}
+
+/// Console operators (separate from app User accounts).
+model Admin {
+  id           String    @id @default(uuid())
+  email        String    @unique
+  password     String
+  name         String?
+  tokenVersion Int       @default(0)
+  lastLoginAt  DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  auditLogs AdminAuditLog[]
+
+  @@index([email])
+}
+
+/// RevenueCat webhook deliveries (for admin billing ops).
+model BillingWebhookEvent {
+  id              String   @id @default(uuid())
+  externalEventId String?
+  eventType       String
+  appUserId       String?
+  userId          String?
+  user            User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  productId       String?
+  store           String?
+  outcome         String   // processed | duplicate | unmapped | ignored | error
+  createdAt       DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([userId])
+  @@index([externalEventId])
+}
+
+model AdminAuditLog {
+  id         String   @id @default(uuid())
+  adminId    String
+  admin      Admin    @relation(fields: [adminId], references: [id], onDelete: Cascade)
+  action     String
+  targetType String   // user | admin | system
+  targetId   String?
+  metadata   Json?
+  ipAddress  String?
+  createdAt  DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([adminId])
 }
 
 /// Expo push token for one installed app (a user may have several devices).

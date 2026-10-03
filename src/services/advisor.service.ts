@@ -5,6 +5,7 @@
  */
 
 import { runInsightsModel, extractJson } from './gemini.service';
+import type { AiMetricKind } from './aiMetrics.service';
 import { SpendingIntelligence } from './analytics.service';
 
 export interface AdvisorContext {
@@ -100,7 +101,9 @@ function contextBlock(ctx: AdvisorContext): string {
       if (prev === 0 && cur === 0) continue;
       const diff = Math.round((cur - prev) * 100) / 100;
       const pct = prev > 0 ? Math.round(((cur - prev) / prev) * 100) : null;
-      deltas.push(`${c}: ${diff >= 0 ? '+' : ''}${diff}${pct !== null ? ` (${pct >= 0 ? '+' : ''}${pct}%)` : ' (new)'}`);
+      deltas.push(
+        `${c}: ${diff >= 0 ? '+' : ''}${diff}${pct !== null ? ` (${pct >= 0 ? '+' : ''}${pct}%)` : ' (new)'}`
+      );
     }
     lines.push(`  Month-over-month category changes: ${deltas.join('; ')}`);
   }
@@ -113,13 +116,17 @@ function contextBlock(ctx: AdvisorContext): string {
   if (ctx.goals && ctx.goals.length > 0) {
     lines.push(
       `Savings goals: ${ctx.goals
-        .map((g) => `"${g.name}" ${g.savedAmount}/${g.targetAmount}${g.deadline ? ` by ${g.deadline.slice(0, 10)}` : ''}`)
+        .map(
+          (g) =>
+            `"${g.name}" ${g.savedAmount}/${g.targetAmount}${g.deadline ? ` by ${g.deadline.slice(0, 10)}` : ''}`
+        )
         .join('; ')}`
     );
   }
   if (ctx.intelligence) {
     const { anomalies, trends, waste, recurring } = ctx.intelligence;
-    if (anomalies.length) lines.push(`Detected anomalies: ${anomalies.map((a) => a.message).join(' | ')}`);
+    if (anomalies.length)
+      lines.push(`Detected anomalies: ${anomalies.map((a) => a.message).join(' | ')}`);
     if (trends.length) lines.push(`Rising categories: ${trends.map((t) => t.message).join(' | ')}`);
     if (waste.length) lines.push(`Potential waste: ${waste.map((w) => w.message).join(' | ')}`);
     if (recurring.length)
@@ -144,8 +151,15 @@ function contextBlock(ctx: AdvisorContext): string {
 export async function answerFinancialQuestion(
   question: string,
   ctx: AdvisorContext,
-  ragMatches: Array<{ description: string; category: string; amount: number; currency: string; date: string }> = [],
-  history: ChatMessage[] = []
+  ragMatches: Array<{
+    description: string;
+    category: string;
+    amount: number;
+    currency: string;
+    date: string;
+  }> = [],
+  history: ChatMessage[] = [],
+  metricKind: AiMetricKind = 'advisor_ask'
 ): Promise<AdvisorAnswer> {
   const historyBlock = history
     .slice(-6)
@@ -155,7 +169,10 @@ export async function answerFinancialQuestion(
   const ragBlock =
     ragMatches.length > 0
       ? `\nEXPENSES FROM HISTORY MOST RELEVANT TO THE QUESTION:\n${ragMatches
-          .map((m) => `- ${m.description} (${m.category}): ${m.amount} ${m.currency} on ${m.date.slice(0, 10)}`)
+          .map(
+            (m) =>
+              `- ${m.description} (${m.category}): ${m.amount} ${m.currency} on ${m.date.slice(0, 10)}`
+          )
           .join('\n')}\n`
       : '';
 
@@ -175,7 +192,7 @@ Return JSON:
   "followUps": ["follow-up question 1", "follow-up question 2"]
 }`;
 
-  const raw = await runInsightsModel(prompt);
+  const raw = await runInsightsModel(prompt, metricKind);
   try {
     const parsed = extractJson(raw);
     return {
@@ -194,7 +211,10 @@ Return JSON:
 export async function explainSpendingChange(ctx: AdvisorContext): Promise<AdvisorAnswer> {
   return answerFinancialQuestion(
     'Why did I spend so much this month? Explain exactly what drove the change compared to last month, naming the categories and purchases responsible.',
-    ctx
+    ctx,
+    [],
+    [],
+    'advisor_why'
   );
 }
 
@@ -228,7 +248,7 @@ Return JSON:
   ]
 }`;
 
-  const raw = await runInsightsModel(prompt);
+  const raw = await runInsightsModel(prompt, 'advisor_savings');
   const parsed = extractJson(raw);
   const steps: SavingsPlanStep[] = (Array.isArray(parsed.steps) ? parsed.steps : [])
     .map((s: any) => ({
@@ -283,7 +303,7 @@ Return JSON:
   "recommendations": ["recommendation 1", "recommendation 2"]
 }`;
 
-  const raw = await runInsightsModel(prompt);
+  const raw = await runInsightsModel(prompt, 'briefing');
   const parsed = extractJson(raw);
   return {
     title: String(parsed.title || 'Your weekly financial briefing').trim(),

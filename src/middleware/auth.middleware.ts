@@ -42,7 +42,7 @@ export const protect = async (
       // Verify token
       const decoded = jwt.verify(token, process.env.JWT_SECRET!) as JwtPayload;
 
-      if (decoded.purpose === 'password_reset') {
+      if (decoded.purpose === 'password_reset' || decoded.purpose === 'admin_access') {
         return next(new AppError('Not authorized to access this route', 401));
       }
 

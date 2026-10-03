@@ -61,7 +61,7 @@ core thing being searched for, stripped of dates/amount qualifiers):
   "minAmount": 100,
   "maxAmount": 500
 }`;
-    const raw = await runParsingModel(prompt);
+    const raw = await runParsingModel(prompt, 'search');
     const parsed = extractJson(raw);
     return {
       semanticQuery: String(parsed.semanticQuery || query).trim() || query,

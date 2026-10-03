@@ -1,0 +1,158 @@
+import { Response, NextFunction } from 'express';
+import { asyncHandler, AppError } from '../middleware/error.middleware';
+import { AdminAuthRequest } from '../middleware/adminAuth.middleware';
+import { clientIp, logAdminAction } from '../services/adminAudit.service';
+import {
+  findBillingDriftUsers,
+  getGrowthSeries,
+  getOverviewStats,
+  getUserDetail,
+  listAdminAuditLogs,
+  listBillingWebhookEvents,
+  listUsers,
+  revokeUserSessions,
+  updateUserAdmin,
+} from '../services/admin.service';
+import { getAiUsageSeries } from '../services/aiMetrics.service';
+import {
+  getQueueMonitorStats,
+  getRagHealthStats,
+  getRedisHealth,
+  getRevenueCatSyncCheck,
+} from '../services/adminOps.service';
+
+export const getStatsOverview = asyncHandler(async (_req: AdminAuthRequest, res: Response) => {
+  const data = await getOverviewStats();
+  res.json({ success: true, data });
+});
+
+export const getGrowth = asyncHandler(async (req: AdminAuthRequest, res: Response) => {
+  const days = Math.min(90, Math.max(7, parseInt(String(req.query.days || '30'), 10) || 30));
+  const data = await getGrowthSeries(days);
+  res.json({ success: true, data });
+});
+
+export const getUsers = asyncHandler(async (req: AdminAuthRequest, res: Response) => {
+  const page = Math.max(1, parseInt(String(req.query.page || '1'), 10) || 1);
+  const limit = Math.min(100, Math.max(10, parseInt(String(req.query.limit || '20'), 10) || 20));
+  const search = typeof req.query.search === 'string' ? req.query.search.trim() : undefined;
+  const data = await listUsers({ page, limit, search: search || undefined });
+  res.json({ success: true, data });
+});
+
+export const getUser = asyncHandler(
+  async (req: AdminAuthRequest, res: Response, next: NextFunction) => {
+    const user = await getUserDetail(req.params.id);
+    if (!user) return next(new AppError('User not found', 404));
+    res.json({ success: true, data: user });
+  }
+);
+
+export const patchUser = asyncHandler(
+  async (req: AdminAuthRequest, res: Response, next: NextFunction) => {
+    const { isPremium, subscriptionStatus } = req.body ?? {};
+    const data: { isPremium?: boolean; subscriptionStatus?: string | null } = {};
+    if (typeof isPremium === 'boolean') data.isPremium = isPremium;
+    if (subscriptionStatus !== undefined) {
+      data.subscriptionStatus =
+        subscriptionStatus === null || subscriptionStatus === ''
+          ? null
+          : String(subscriptionStatus);
+    }
+    if (Object.keys(data).length === 0) {
+      return next(new AppError('No valid fields to update', 400));
+    }
+    try {
+      const user = await updateUserAdmin(req.params.id, data);
+      if (req.admin) {
+        await logAdminAction({
+          adminId: req.admin.id,
+          action: 'user.update',
+          targetType: 'user',
+          targetId: user.id,
+          metadata: data,
+          ipAddress: clientIp(req),
+        });
+      }
+      res.json({ success: true, data: user });
+    } catch {
+      return next(new AppError('User not found', 404));
+    }
+  }
+);
+
+export const postRevokeUserSessions = asyncHandler(
+  async (req: AdminAuthRequest, res: Response, next: NextFunction) => {
+    try {
+      const user = await revokeUserSessions(req.params.id);
+      if (req.admin) {
+        await logAdminAction({
+          adminId: req.admin.id,
+          action: 'user.revoke_sessions',
+          targetType: 'user',
+          targetId: user.id,
+          metadata: { tokenVersion: user.tokenVersion },
+          ipAddress: clientIp(req),
+        });
+      }
+      res.json({ success: true, data: user });
+    } catch {
+      return next(new AppError('User not found', 404));
+    }
+  }
+);
+
+export const getBillingEvents = asyncHandler(async (req: AdminAuthRequest, res: Response) => {
+  const page = Math.max(1, parseInt(String(req.query.page || '1'), 10) || 1);
+  const limit = Math.min(100, Math.max(10, parseInt(String(req.query.limit || '30'), 10) || 30));
+  const data = await listBillingWebhookEvents({ page, limit });
+  res.json({ success: true, data });
+});
+
+export const getBillingDrift = asyncHandler(async (_req: AdminAuthRequest, res: Response) => {
+  const items = await findBillingDriftUsers();
+  res.json({ success: true, data: { items, count: items.length } });
+});
+
+export const getAuditLogs = asyncHandler(async (req: AdminAuthRequest, res: Response) => {
+  const page = Math.max(1, parseInt(String(req.query.page || '1'), 10) || 1);
+  const limit = Math.min(100, Math.max(10, parseInt(String(req.query.limit || '30'), 10) || 30));
+  const data = await listAdminAuditLogs({ page, limit });
+  res.json({ success: true, data });
+});
+
+export const getSystemHealth = asyncHandler(async (_req: AdminAuthRequest, res: Response) => {
+  const redis = await getRedisHealth();
+  res.json({
+    success: true,
+    data: {
+      status: redis.ok ? 'ok' : 'degraded',
+      timestamp: new Date().toISOString(),
+      uptime: process.uptime(),
+      nodeEnv: process.env.NODE_ENV || 'development',
+      redis,
+    },
+  });
+});
+
+export const getAiUsage = asyncHandler(async (req: AdminAuthRequest, res: Response) => {
+  const days = Math.min(90, Math.max(7, parseInt(String(req.query.days || '30'), 10) || 30));
+  const data = await getAiUsageSeries(days);
+  res.json({ success: true, data });
+});
+
+export const getQueueMonitor = asyncHandler(async (_req: AdminAuthRequest, res: Response) => {
+  const data = await getQueueMonitorStats();
+  res.json({ success: true, data });
+});
+
+export const getRagHealth = asyncHandler(async (_req: AdminAuthRequest, res: Response) => {
+  const data = await getRagHealthStats();
+  res.json({ success: true, data });
+});
+
+export const getRevenueCatSync = asyncHandler(async (req: AdminAuthRequest, res: Response) => {
+  const limit = Math.min(50, Math.max(5, parseInt(String(req.query.limit || '25'), 10) || 25));
+  const data = await getRevenueCatSyncCheck(limit);
+  res.json({ success: true, data });
+});

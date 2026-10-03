@@ -15,20 +15,21 @@ import {
 } from '../queues/expenseParse.queue';
 import { queueConnection } from '../queues/queue.connection';
 import { parseCategoryBudgets, parseExpenses } from '../services/gemini.service';
-import { persistParsedExpenses, applySelectedExpenseDate, resolveSelectedExpenseDate } from '../services/expenseParse.service';
+import {
+  persistParsedExpenses,
+  applySelectedExpenseDate,
+  resolveSelectedExpenseDate,
+} from '../services/expenseParse.service';
 import { getUserContext, updateCategoryMapping } from '../services/rag.service';
 import { withIdempotency } from '../services/idempotency.service';
 import { logger } from '../config/logger';
 import * as Sentry from '@sentry/node';
 
 let expenseWorker: Worker<ExpenseParseJobData, ExpenseParseJobResult> | null = null;
-let categoryBudgetWorker: Worker<CategoryBudgetParseJobData, CategoryBudgetParseJobResult> | null = null;
+let categoryBudgetWorker: Worker<CategoryBudgetParseJobData, CategoryBudgetParseJobResult> | null =
+  null;
 
-function previewToParsed(
-  preview: LocalPreviewExpense[],
-  userCurrency: string,
-  rawInput: string
-) {
+function previewToParsed(preview: LocalPreviewExpense[], userCurrency: string, rawInput: string) {
   return preview
     .filter((p) => p.description && Number(p.amount) > 0)
     .map((p) => ({
@@ -96,12 +97,15 @@ export const startParseWorkers = () => {
         try {
           const userContext = await getUserContext(userId);
           parsedExpenses = applySelectedExpenseDate(
-            await parseExpenses(rawInput, userCurrency, userContext, selectedDate),
+            await parseExpenses(rawInput, userCurrency, userContext, selectedDate, 'parse_async'),
             selectedDate
           );
         } catch (err) {
           if (isLastAttempt(job) && create && fallback.length > 0) {
-            logger.warn({ jobId: job.id, err }, 'Parse exhausted retries; persisting local preview');
+            logger.warn(
+              { jobId: job.id, err },
+              'Parse exhausted retries; persisting local preview'
+            );
             return persistCreated(userId, fallback, rawInput, userCurrency, jobKey);
           }
           throw err;
@@ -154,7 +158,10 @@ export const startParseWorkers = () => {
     const max = job?.opts.attempts ?? 1;
     const final = (job?.attemptsMade ?? 0) >= max;
     if (!final) {
-      logger.warn({ err: error, jobId: job?.id, attempt: job?.attemptsMade }, 'Expense parse job retrying');
+      logger.warn(
+        { err: error, jobId: job?.id, attempt: job?.attemptsMade },
+        'Expense parse job retrying'
+      );
       return;
     }
     logger.error({ err: error, jobId: job?.id }, 'Expense parse job failed');
@@ -176,4 +183,3 @@ export const stopParseWorkers = async () => {
     queueConnection.quit(),
   ]);
 };
-
