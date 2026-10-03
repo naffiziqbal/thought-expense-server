@@ -107,7 +107,7 @@ interface RcSubscriberResponse {
   };
 }
 
-export async function getRevenueCatSyncCheck(limit = 25) {
+export async function getRevenueCatSyncCheck(limit = 200) {
   const secret = process.env.REVENUECAT_SECRET_API_KEY?.trim();
   if (!secret) {
     return {
@@ -117,10 +117,9 @@ export async function getRevenueCatSyncCheck(limit = 25) {
   }
 
   const entitlementId = process.env.REVENUECAT_ENTITLEMENT_ID?.trim() || 'premium';
+  const dbPremiumCount = await prisma.user.count({ where: { isPremium: true } });
   const candidates = await prisma.user.findMany({
-    where: {
-      OR: [{ isPremium: true }, { subscriptionProductId: { not: null } }],
-    },
+    where: { isPremium: true },
     select: {
       id: true,
       email: true,
@@ -129,7 +128,7 @@ export async function getRevenueCatSyncCheck(limit = 25) {
       subscriptionProductId: true,
     },
     orderBy: { updatedAt: 'desc' },
-    take: Math.min(50, Math.max(1, limit)),
+    take: Math.min(200, Math.max(1, limit)),
   });
 
   const mismatches: Array<{
@@ -139,6 +138,7 @@ export async function getRevenueCatSyncCheck(limit = 25) {
     rcPremium: boolean;
     reason: string;
   }> = [];
+  let rcActiveCount = 0;
 
   for (const user of candidates) {
     try {
@@ -172,6 +172,8 @@ export async function getRevenueCatSyncCheck(limit = 25) {
         ? !ent.expires_date || new Date(ent.expires_date).getTime() > Date.now()
         : false;
 
+      if (rcPremium) rcActiveCount += 1;
+
       if (rcPremium !== user.isPremium) {
         mismatches.push({
           userId: user.id,
@@ -191,7 +193,9 @@ export async function getRevenueCatSyncCheck(limit = 25) {
   return {
     configured: true as const,
     entitlementId,
+    dbPremiumCount,
     sampled: candidates.length,
+    rcActiveInSample: rcActiveCount,
     mismatchCount: mismatches.length,
     mismatches,
     generatedAt: new Date().toISOString(),

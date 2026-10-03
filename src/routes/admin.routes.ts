@@ -15,6 +15,7 @@ import {
   getUser,
   getUsers,
   patchUser,
+  postReconcileStalePremium,
   postRevokeUserSessions,
 } from '../controllers/admin.controller';
 
@@ -33,6 +34,7 @@ router.patch('/users/:id', patchUser);
 router.post('/users/:id/revoke-sessions', postRevokeUserSessions);
 router.get('/billing/events', getBillingEvents);
 router.get('/billing/drift', getBillingDrift);
+router.post('/billing/reconcile-stale', postReconcileStalePremium);
 router.get('/audit', getAuditLogs);
 router.get('/system/health', getSystemHealth);
 router.get('/ai/usage', getAiUsage);

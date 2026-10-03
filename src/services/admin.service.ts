@@ -15,6 +15,11 @@ export async function getOverviewStats() {
   const [
     totalUsers,
     premiumUsers,
+    premiumWithStoreProduct,
+    premiumStalePeriod,
+    premiumExpiredStatus,
+    premiumNoUntil,
+    premiumHeuristicActive,
     signups7d,
     signups30d,
     totalExpenses,
@@ -24,6 +29,20 @@ export async function getOverviewStats() {
   ] = await Promise.all([
     prisma.user.count(),
     prisma.user.count({ where: { isPremium: true } }),
+    prisma.user.count({
+      where: { isPremium: true, subscriptionProductId: { not: null } },
+    }),
+    prisma.user.count({ where: { isPremium: true, premiumUntil: { lt: now } } }),
+    prisma.user.count({ where: { isPremium: true, subscriptionStatus: 'expired' } }),
+    prisma.user.count({ where: { isPremium: true, premiumUntil: null } }),
+    prisma.user.count({
+      where: {
+        isPremium: true,
+        subscriptionProductId: { not: null },
+        subscriptionStatus: { in: ['active', 'cancelled', 'grace'] },
+        OR: [{ premiumUntil: null }, { premiumUntil: { gt: now } }],
+      },
+    }),
     prisma.user.count({ where: { createdAt: { gte: day7 } } }),
     prisma.user.count({ where: { createdAt: { gte: day30 } } }),
     prisma.expense.count(),
@@ -46,6 +65,16 @@ export async function getOverviewStats() {
     premiumUsers,
     freeUsers: totalUsers - premiumUsers,
     premiumRate: totalUsers > 0 ? Math.round((premiumUsers / totalUsers) * 1000) / 10 : 0,
+    premiumBreakdown: {
+      /** Same as premiumUsers — who the app treats as premium today */
+      dbFlag: premiumUsers,
+      /** Closer to RevenueCat “active subscriptions”: store product + non-expired period + not expired status */
+      heuristicBillable: premiumHeuristicActive,
+      withStoreProduct: premiumWithStoreProduct,
+      stalePeriodEnd: premiumStalePeriod,
+      statusExpired: premiumExpiredStatus,
+      noPremiumUntil: premiumNoUntil,
+    },
     signups7d,
     signups30d,
     totalExpenses,
@@ -228,6 +257,21 @@ function driftReason(user: {
     return 'Active product on file but premium flag is false';
   }
   return 'Inconsistent subscription fields';
+}
+
+/** Clear isPremium when period ended or status is expired (missed EXPIRATION webhooks). */
+export async function reconcileStalePremiumFlags() {
+  const now = new Date();
+  const result = await prisma.user.updateMany({
+    where: {
+      OR: [
+        { isPremium: true, premiumUntil: { lt: now } },
+        { isPremium: true, subscriptionStatus: 'expired' },
+      ],
+    },
+    data: { isPremium: false },
+  });
+  return { updated: result.count };
 }
 
 export async function findBillingDriftUsers() {

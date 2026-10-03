@@ -10,6 +10,7 @@ import {
   listAdminAuditLogs,
   listBillingWebhookEvents,
   listUsers,
+  reconcileStalePremiumFlags,
   revokeUserSessions,
   updateUserAdmin,
 } from '../services/admin.service';
@@ -152,7 +153,24 @@ export const getRagHealth = asyncHandler(async (_req: AdminAuthRequest, res: Res
 });
 
 export const getRevenueCatSync = asyncHandler(async (req: AdminAuthRequest, res: Response) => {
-  const limit = Math.min(50, Math.max(5, parseInt(String(req.query.limit || '25'), 10) || 25));
+  const limit = Math.min(200, Math.max(5, parseInt(String(req.query.limit || '200'), 10) || 200));
   const data = await getRevenueCatSyncCheck(limit);
   res.json({ success: true, data });
 });
+
+export const postReconcileStalePremium = asyncHandler(
+  async (req: AdminAuthRequest, res: Response) => {
+    const result = await reconcileStalePremiumFlags();
+    if (req.admin) {
+      await logAdminAction({
+        adminId: req.admin.id,
+        action: 'billing.reconcile_stale_premium',
+        targetType: 'system',
+        targetId: null,
+        metadata: result,
+        ipAddress: clientIp(req),
+      });
+    }
+    res.json({ success: true, data: result });
+  }
+);
