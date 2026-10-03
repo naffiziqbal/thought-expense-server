@@ -7,7 +7,11 @@ import {
   BRIEFING_USER_JOB,
 } from '../queues/briefing.queue';
 import { queueConnection } from '../queues/queue.connection';
-import { generateWeeklyBriefingForUser, listBriefingRecipients, utcIsoWeekKey } from '../services/briefing.service';
+import {
+  generateWeeklyBriefingForUser,
+  listBriefingRecipients,
+  utcIsoWeekKey,
+} from '../services/briefing.service';
 import { logger } from '../config/logger';
 import * as Sentry from '@sentry/node';
 
@@ -24,11 +28,13 @@ export const startBriefingWorker = (): void => {
         logger.info({ count: userIds.length }, 'Enqueueing user briefings');
         const weekKey = utcIsoWeekKey();
         await briefingQueue.addBulk(
-          userIds.map((userId) => ({
+          userIds.map((userId, index) => ({
             name: BRIEFING_USER_JOB,
             data: { userId },
             opts: {
               jobId: `briefing-${weekKey}-${userId}`,
+              // Spread fan-out to reduce Gemini RPM spikes (esp. free tier).
+              delay: index * 15_000,
             },
           }))
         );
@@ -37,11 +43,16 @@ export const startBriefingWorker = (): void => {
 
       const { userId } = job.data;
       if (!userId) throw new Error('user-briefing job missing userId');
-      const result = await generateWeeklyBriefingForUser(userId);
+      const result = await generateWeeklyBriefingForUser(userId, {
+        includeBackupKey: false,
+      });
       return result;
     },
-    // Gemini + Resend per user: keep concurrency modest to respect rate limits
-    { connection: queueConnection, concurrency: 3 }
+    {
+      connection: queueConnection,
+      concurrency: 1,
+      limiter: { max: 4, duration: 60_000 },
+    }
   );
 
   briefingWorker.on('failed', (job, error) => {

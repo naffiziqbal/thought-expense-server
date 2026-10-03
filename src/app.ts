@@ -33,8 +33,7 @@ app.use(
 
 // Rate limiting — Redis-backed after initRateLimiters() (see startServer).
 // Keyed by JWT user id when present, else IP. AI routes are tighter.
-app.use('/api/expenses/parse', aiRateLimit);
-app.use('/api/expenses/ocr', aiRateLimit);
+// AI limit applies on expense routes to POST parse/OCR only — not GET job status polls.
 app.use('/api/assistant', aiRateLimit);
 app.use('/api/insights/generate', aiRateLimit);
 app.use('/api/insights/briefing/generate', aiRateLimit);

@@ -11,6 +11,53 @@ function getResend(): Resend {
 
 const FROM_EMAIL = process.env.EMAIL_FROM || 'ThoughtExpense <onboarding@resend.dev>';
 const APP_NAME = process.env.APP_NAME || 'ThoughtExpense';
+const APP_URL = (process.env.FRONTEND_URL || 'https://thoughtexpense.nafiziqbal.com').replace(
+  /\/$/,
+  ''
+);
+
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function formatMoney(amount: number, currency: string): string {
+  try {
+    return new Intl.NumberFormat('en-US', {
+      style: 'currency',
+      currency: currency.length === 3 ? currency : 'USD',
+      maximumFractionDigits: 0,
+    }).format(amount);
+  } catch {
+    return `${amount.toLocaleString()} ${currency}`;
+  }
+}
+
+function emailShell(body: string, preheader?: string): string {
+  const hiddenPreheader = preheader
+    ? `<div style="display:none;max-height:0;overflow:hidden;opacity:0;">${escapeHtml(preheader)}</div>`
+    : '';
+  return `
+    ${hiddenPreheader}
+    <div style="font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 560px; margin: 0 auto; color: #111827;">
+      <div style="padding: 8px 0 24px; border-bottom: 1px solid #e5e7eb;">
+        <span style="font-size: 18px; font-weight: 700; color: #0d9488;">${APP_NAME}</span>
+      </div>
+      ${body}
+      <hr style="border: none; border-top: 1px solid #e5e7eb; margin: 32px 0 16px;" />
+      <p style="color: #9ca3af; font-size: 12px; line-height: 1.5; margin: 0;">
+        You’re receiving this because you have a ${APP_NAME} account.
+        <a href="${APP_URL}/dashboard" style="color: #0d9488;">Open dashboard</a>
+      </p>
+    </div>`;
+}
+
+function primaryButton(href: string, label: string): string {
+  return `<a href="${href}" style="display: inline-block; margin: 20px 0 8px; padding: 12px 22px; background: #0d9488; color: #ffffff; text-decoration: none; border-radius: 10px; font-weight: 600; font-size: 15px;">${label}</a>`;
+}
 
 /**
  * Send forgot password email with reset link
@@ -29,27 +76,26 @@ export async function sendForgotPasswordEmail(
       from: FROM_EMAIL,
       to: [to],
       subject: `Reset your ${APP_NAME} password`,
-      html: `
-        <div style="font-family: system-ui, -apple-system, sans-serif; max-width: 480px; margin: 0 auto;">
-          <h2 style="color: #0d9488; margin-bottom: 16px;">Reset your password</h2>
-          <p style="color: #374151; line-height: 1.6;">
-            You requested a password reset for your ${APP_NAME} account.
+      html: emailShell(
+        `
+          <h1 style="font-size: 22px; margin: 24px 0 12px; color: #111827;">Reset your password</h1>
+          <p style="color: #374151; line-height: 1.65; margin: 0 0 12px;">
+            We received a request to reset the password for your ${APP_NAME} account.
           </p>
-          <p style="color: #374151; line-height: 1.6;">
-            Click the button below to set a new password. This link will expire in 1 hour.
+          <p style="color: #374151; line-height: 1.65; margin: 0 0 8px;">
+            Use the button below to choose a new password. The link expires in <strong>1 hour</strong>.
           </p>
-          <a href="${resetLink}" style="display: inline-block; margin: 24px 0; padding: 12px 24px; background: #0d9488; color: white; text-decoration: none; border-radius: 8px; font-weight: 600;">
-            Reset Password
-          </a>
-          <p style="color: #6b7280; font-size: 14px;">
-            If you didn't request this, you can safely ignore this email.
+          ${primaryButton(resetLink, 'Reset password')}
+          <p style="color: #6b7280; font-size: 13px; line-height: 1.5; margin-top: 16px;">
+            Button not working? Copy and paste this link into your browser:<br />
+            <span style="word-break: break-all; color: #0d9488;">${escapeHtml(resetLink)}</span>
           </p>
-          <hr style="border: none; border-top: 1px solid #e5e7eb; margin: 24px 0;" />
-          <p style="color: #9ca3af; font-size: 12px;">
-            ${APP_NAME} — Track expenses with natural language
+          <p style="color: #6b7280; font-size: 14px; line-height: 1.5; margin-top: 20px;">
+            If you didn’t ask for this, ignore this email — your password stays the same.
           </p>
-        </div>
-      `,
+        `,
+        'Reset your ThoughtExpense password — link expires in 1 hour.'
+      ),
     });
 
     if (error) {
@@ -95,55 +141,97 @@ export async function sendWeeklyBriefingEmail(
     }
 
     const { briefing, weekTotal, previousWeekTotal, currency, name, isPremium } = payload;
-    const delta = previousWeekTotal > 0
-      ? Math.round(((weekTotal - previousWeekTotal) / previousWeekTotal) * 100)
-      : null;
-    const deltaLine = delta === null
-      ? ''
-      : delta >= 0
-        ? `<span style="color: #dc2626;">▲ ${delta}% vs last week</span>`
-        : `<span style="color: #16a34a;">▼ ${Math.abs(delta)}% vs last week</span>`;
+    const title = escapeHtml(briefing.title);
+    const summary = escapeHtml(briefing.summary);
+    const greeting = name ? `Hi ${escapeHtml(name)},` : 'Hi there,';
+    const thisWeek = formatMoney(weekTotal, currency);
+    const lastWeek = formatMoney(previousWeekTotal, currency);
+    const diffAmount = weekTotal - previousWeekTotal;
+    const diffFormatted = formatMoney(Math.abs(diffAmount), currency);
+
+    let comparisonBlock: string;
+    if (previousWeekTotal <= 0 && weekTotal <= 0) {
+      comparisonBlock = `<p style="margin: 0; color: #6b7280; font-size: 14px;">No spending logged this week yet.</p>`;
+    } else if (previousWeekTotal <= 0) {
+      comparisonBlock = `
+        <p style="margin: 0; font-size: 14px; color: #374151;">First week with activity in this comparison window.</p>`;
+    } else {
+      const pct = Math.round(((weekTotal - previousWeekTotal) / previousWeekTotal) * 100);
+      const up = diffAmount >= 0;
+      const arrow = up ? '▲' : '▼';
+      const color = up ? '#dc2626' : '#16a34a';
+      comparisonBlock = `
+        <table style="width: 100%; margin-top: 12px; font-size: 14px; color: #374151;" cellpadding="0" cellspacing="0">
+          <tr>
+            <td style="padding: 6px 0;">Last week</td>
+            <td style="padding: 6px 0; text-align: right; font-weight: 600;">${lastWeek}</td>
+          </tr>
+          <tr>
+            <td style="padding: 6px 0;">This week</td>
+            <td style="padding: 6px 0; text-align: right; font-weight: 600;">${thisWeek}</td>
+          </tr>
+          <tr>
+            <td style="padding: 8px 0 0; border-top: 1px solid #e5e7eb;">Change</td>
+            <td style="padding: 8px 0 0; border-top: 1px solid #e5e7eb; text-align: right; font-weight: 600; color: ${color};">
+              ${arrow} ${diffFormatted} (${pct >= 0 ? '+' : ''}${pct}%)
+            </td>
+          </tr>
+        </table>`;
+    }
 
     const listItems = (items: string[]) =>
-      items.map((i) => `<li style="color: #374151; line-height: 1.6; margin-bottom: 8px;">${i}</li>`).join('');
+      items
+        .map(
+          (i) =>
+            `<li style="color: #374151; line-height: 1.65; margin-bottom: 10px;">${escapeHtml(i)}</li>`
+        )
+        .join('');
 
     const upgradeBlock = isPremium
       ? ''
       : `
-        <div style="margin: 24px 0; padding: 16px; background: #f0fdfa; border: 1px solid #99f6e4; border-radius: 12px;">
-          <p style="color: #0f766e; margin: 0; font-size: 14px;">
-            Want deeper analysis? Premium unlocks your full history, receipt scanning and unlimited AI advice.
+        <div style="margin: 28px 0 0; padding: 16px 18px; background: #f0fdfa; border: 1px solid #99f6e4; border-radius: 12px;">
+          <p style="color: #115e59; margin: 0 0 8px; font-weight: 600; font-size: 14px;">Go deeper with Premium</p>
+          <p style="color: #0f766e; margin: 0; font-size: 14px; line-height: 1.55;">
+            12 months of history, exports, receipt OCR on web, and unlimited AI assistant — so briefings like this stay sharp.
           </p>
         </div>`;
+
+    const insightsUrl = `${APP_URL}/dashboard/insights`;
 
     const { error } = await getResend().emails.send({
       from: FROM_EMAIL,
       to: [to],
-      subject: `${briefing.title} — your ${APP_NAME} weekly briefing`,
-      html: `
-        <div style="font-family: system-ui, -apple-system, sans-serif; max-width: 520px; margin: 0 auto;">
-          <h2 style="color: #0d9488; margin-bottom: 4px;">${briefing.title}</h2>
-          <p style="color: #6b7280; font-size: 14px; margin-top: 0;">
-            ${name ? `Hi ${name}, here` : 'Here'}'s your week in money.
-          </p>
-          <div style="margin: 20px 0; padding: 20px; background: #f9fafb; border-radius: 12px; text-align: center;">
-            <div style="font-size: 30px; font-weight: 700; color: #111827;">${weekTotal.toLocaleString()} ${currency}</div>
-            <div style="font-size: 14px; margin-top: 4px;">${deltaLine || 'spent this week'}</div>
+      subject: `${briefing.title} — ${APP_NAME} weekly briefing`,
+      html: emailShell(
+        `
+          <p style="color: #6b7280; font-size: 14px; margin: 20px 0 4px;">${greeting}</p>
+          <h1 style="font-size: 22px; margin: 0 0 16px; color: #111827; line-height: 1.35;">${title}</h1>
+          <div style="margin: 0 0 24px; padding: 20px 22px; background: #f9fafb; border-radius: 12px; border: 1px solid #e5e7eb;">
+            <div style="font-size: 13px; text-transform: uppercase; letter-spacing: 0.04em; color: #6b7280; margin-bottom: 6px;">This week</div>
+            <div style="font-size: 32px; font-weight: 700; color: #111827; line-height: 1.2;">${thisWeek}</div>
+            ${comparisonBlock}
           </div>
-          <p style="color: #374151; line-height: 1.6;">${briefing.summary}</p>
-          ${briefing.highlights.length ? `
-          <h3 style="color: #111827; font-size: 16px; margin-bottom: 8px;">Highlights</h3>
-          <ul style="padding-left: 20px; margin-top: 0;">${listItems(briefing.highlights)}</ul>` : ''}
-          ${briefing.recommendations.length ? `
-          <h3 style="color: #111827; font-size: 16px; margin-bottom: 8px;">For next week</h3>
-          <ul style="padding-left: 20px; margin-top: 0;">${listItems(briefing.recommendations)}</ul>` : ''}
+          <p style="color: #374151; line-height: 1.65; margin: 0 0 20px; font-size: 15px;">${summary}</p>
+          ${
+            briefing.highlights.length
+              ? `
+          <h2 style="color: #111827; font-size: 16px; margin: 0 0 10px;">What stood out</h2>
+          <ul style="padding-left: 20px; margin: 0 0 24px;">${listItems(briefing.highlights)}</ul>`
+              : ''
+          }
+          ${
+            briefing.recommendations.length
+              ? `
+          <h2 style="color: #111827; font-size: 16px; margin: 0 0 10px;">Try this next week</h2>
+          <ul style="padding-left: 20px; margin: 0 0 8px;">${listItems(briefing.recommendations)}</ul>`
+              : ''
+          }
+          ${primaryButton(insightsUrl, 'View full briefing in app')}
           ${upgradeBlock}
-          <hr style="border: none; border-top: 1px solid #e5e7eb; margin: 24px 0;" />
-          <p style="color: #9ca3af; font-size: 12px;">
-            ${APP_NAME} — Track your money. Understand your habits. Make better financial decisions.
-          </p>
-        </div>
-      `,
+        `,
+        `${briefing.summary.slice(0, 120)}…`
+      ),
     });
 
     if (error) {
@@ -178,24 +266,21 @@ export async function sendPasswordResetOtpEmail(
       from: FROM_EMAIL,
       to: [to],
       subject: `${otp} is your ${APP_NAME} reset code`,
-      html: `
-        <div style="font-family: system-ui, -apple-system, sans-serif; max-width: 480px; margin: 0 auto;">
-          <h2 style="color: #0d9488; margin-bottom: 16px;">Your password reset code</h2>
-          <p style="color: #374151; line-height: 1.6;">
-            Use this code to reset your ${APP_NAME} password. It expires in 10 minutes.
+      html: emailShell(
+        `
+          <h1 style="font-size: 22px; margin: 24px 0 12px; color: #111827;">Your reset code</h1>
+          <p style="color: #374151; line-height: 1.65; margin: 0 0 16px;">
+            Enter this code in the ${APP_NAME} app to set a new password. It expires in <strong>10 minutes</strong>.
           </p>
-          <div style="margin: 24px 0; padding: 16px 24px; background: #f0fdfa; border: 1px solid #99f6e4; border-radius: 12px; text-align: center;">
-            <span style="font-size: 34px; font-weight: 700; letter-spacing: 10px; color: #0d9488;">${otp}</span>
+          <div style="margin: 20px 0; padding: 20px; background: #f0fdfa; border: 1px solid #99f6e4; border-radius: 12px; text-align: center;">
+            <span style="font-size: 36px; font-weight: 700; letter-spacing: 12px; color: #0d9488; font-variant-numeric: tabular-nums;">${otp}</span>
           </div>
-          <p style="color: #6b7280; font-size: 14px;">
-            If you didn't request this, you can safely ignore this email — your password will not change.
+          <p style="color: #6b7280; font-size: 14px; line-height: 1.5; margin: 0;">
+            Didn’t request a reset? Ignore this email — your password won’t change.
           </p>
-          <hr style="border: none; border-top: 1px solid #e5e7eb; margin: 24px 0;" />
-          <p style="color: #9ca3af; font-size: 12px;">
-            ${APP_NAME} — Track expenses with natural language
-          </p>
-        </div>
-      `,
+        `,
+        `Your ${APP_NAME} password reset code: ${otp}`
+      ),
     });
 
     if (error) {

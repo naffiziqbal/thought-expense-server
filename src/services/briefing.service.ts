@@ -56,7 +56,7 @@ export interface BriefingResult {
 
 export async function generateWeeklyBriefingForUser(
   userId: string,
-  options: { sendEmail?: boolean } = {}
+  options: { sendEmail?: boolean; includeBackupKey?: boolean } = {}
 ): Promise<BriefingResult> {
   const user = await prisma.user.findUnique({
     where: { id: userId },
@@ -117,7 +117,13 @@ export async function generateWeeklyBriefingForUser(
   }
 
   const ctx = await buildAdvisorContext(userId, currency, user.isPremium);
-  const briefing = await generateBriefingContent(ctx, thisWeek.total, lastWeek.total, thisWeek.byCategory);
+  const briefing = await generateBriefingContent(
+    ctx,
+    thisWeek.total,
+    lastWeek.total,
+    thisWeek.byCategory,
+    { includeBackupKey: options.includeBackupKey }
+  );
 
   const insight = await prisma.insight.create({
     data: {

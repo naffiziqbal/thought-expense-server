@@ -26,7 +26,8 @@ const PARSING_FALLBACK_MODELS = (
   .map((m) => m.trim())
   .filter(Boolean);
 
-const BACKUP_MODELS = (process.env.GEMINI_BACKUP_MODELS || 'gemini-3.6-flash,gemini-flash-latest')
+// Avoid gemini-3.6-flash as default backup — free tier is ~5 RPM / ~20 RPD per model.
+const BACKUP_MODELS = (process.env.GEMINI_BACKUP_MODELS || 'gemini-flash-latest,gemini-2.0-flash')
   .split(',')
   .map((m) => m.trim())
   .filter(Boolean);
@@ -54,14 +55,19 @@ interface GeminiAttempt {
   label: 'primary' | 'backup';
 }
 
-/** Primary key with its model chain, then the backup key with its own chain. */
-function buildAttempts(primaryModels: string[]): GeminiAttempt[] {
+export interface GeminiFallbackOptions {
+  /** When false, never use GEMINI_API_KEY_BACKUP (for bulk cron e.g. weekly briefings). */
+  includeBackupKey?: boolean;
+}
+
+/** Primary key with its model chain, then optionally the backup key with its own chain. */
+function buildAttempts(primaryModels: string[], options?: GeminiFallbackOptions): GeminiAttempt[] {
   const attempts: GeminiAttempt[] = primaryModels.map((model) => ({
     client: genAI,
     model,
     label: 'primary',
   }));
-  if (backupAI) {
+  if (backupAI && options?.includeBackupKey !== false) {
     for (const model of BACKUP_MODELS) {
       attempts.push({ client: backupAI, model, label: 'backup' });
     }
@@ -71,9 +77,10 @@ function buildAttempts(primaryModels: string[]): GeminiAttempt[] {
 
 export async function generateWithRetryAndFallback<T>(
   models: string[],
-  fn: (model: GenerativeModel) => Promise<T>
+  fn: (model: GenerativeModel) => Promise<T>,
+  options?: GeminiFallbackOptions
 ): Promise<T> {
-  const attempts = buildAttempts(models);
+  const attempts = buildAttempts(models, options);
   const maxRetries = 2;
   let lastError: unknown;
 
@@ -119,15 +126,20 @@ const EMBEDDING_MODEL = process.env.EMBEDDING_MODEL || 'gemini-embedding-001';
  */
 export const runInsightsModel = async (
   prompt: string,
-  metricKind: AiMetricKind = 'insights'
+  metricKind: AiMetricKind = 'insights',
+  fallbackOptions?: GeminiFallbackOptions
 ): Promise<string> => {
   void recordAiUsage(metricKind);
   const fallbacks = ['gemini-2.0-flash', 'gemini-1.5-flash', 'gemini-1.5-pro'];
   const modelsToTry = [INSIGHTS_MODEL, ...fallbacks.filter((m) => m !== INSIGHTS_MODEL)];
-  return generateWithRetryAndFallback(modelsToTry, async (model) => {
-    const result = await model.generateContent(prompt);
-    return result.response.text();
-  });
+  return generateWithRetryAndFallback(
+    modelsToTry,
+    async (model) => {
+      const result = await model.generateContent(prompt);
+      return result.response.text();
+    },
+    fallbackOptions
+  );
 };
 
 /**

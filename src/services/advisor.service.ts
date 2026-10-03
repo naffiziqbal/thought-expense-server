@@ -278,7 +278,8 @@ export async function generateBriefingContent(
   ctx: AdvisorContext,
   weekTotal: number,
   previousWeekTotal: number,
-  weekByCategory: Record<string, number>
+  weekByCategory: Record<string, number>,
+  options?: { includeBackupKey?: boolean }
 ): Promise<BriefingContent> {
   const prompt = `${ADVISOR_PERSONA}
 
@@ -303,7 +304,9 @@ Return JSON:
   "recommendations": ["recommendation 1", "recommendation 2"]
 }`;
 
-  const raw = await runInsightsModel(prompt, 'briefing');
+  const raw = await runInsightsModel(prompt, 'briefing', {
+    includeBackupKey: options?.includeBackupKey,
+  });
   const parsed = extractJson(raw);
   return {
     title: String(parsed.title || 'Your weekly financial briefing').trim(),
