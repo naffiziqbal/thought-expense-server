@@ -1,5 +1,6 @@
 import { Resend } from 'resend';
 import { logger } from '../config/logger';
+import { isEffectiveManualLifetime } from '../utils/subscription.util';
 
 // Lazy: the Resend constructor throws on an empty key, which would crash the
 // server at boot in environments where email is not configured.
@@ -253,6 +254,13 @@ export async function sendWeeklyBriefingEmail(
  * Send password reset OTP (6-digit code) email
  */
 function formatPremiumUntil(until: Date | null): { label: string; detail: string } {
+  if (isEffectiveManualLifetime(until)) {
+    return {
+      label: 'Lifetime access',
+      detail:
+        'Your complimentary Premium access is granted with no practical end date (stored as long-term access in our system).',
+    };
+  }
   if (!until) {
     return {
       label: 'No fixed end date',

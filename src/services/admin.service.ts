@@ -1,6 +1,10 @@
 import prisma from '../config/prisma';
 import { logger } from '../config/logger';
-import { buildSubscriptionSummary, refreshStalePremium } from '../utils/subscription.util';
+import {
+  buildSubscriptionSummary,
+  manualPremiumLifetimeUntil,
+  refreshStalePremium,
+} from '../utils/subscription.util';
 import { getRevenueCatSubscriberForUser } from './adminOps.service';
 import { sendManualPremiumGrantedEmail } from './email.service';
 import { moderationStatus } from '../utils/userModeration.util';
@@ -384,7 +388,18 @@ export async function updateUserAdmin(
 
   if (typeof data.isPremium === 'boolean') patch.isPremium = data.isPremium;
   if (data.subscriptionStatus !== undefined) patch.subscriptionStatus = data.subscriptionStatus;
-  if (data.premiumUntil !== undefined) patch.premiumUntil = data.premiumUntil;
+  if (data.premiumUntil !== undefined) {
+    patch.premiumUntil =
+      data.premiumUntil === null && data.isPremium === true
+        ? manualPremiumLifetimeUntil()
+        : data.premiumUntil;
+  }
+
+  const resolvedPremiumUntil = (): Date | null | undefined => {
+    if (data.premiumUntil === undefined) return existing.premiumUntil;
+    if (data.premiumUntil === null && data.isPremium === true) return manualPremiumLifetimeUntil();
+    return data.premiumUntil;
+  };
 
   if (data.isPremium === true) {
     if (!existing.premiumSince) patch.premiumSince = new Date();
@@ -401,20 +416,19 @@ export async function updateUserAdmin(
     data: patch,
   });
 
-  const finalPremiumUntil =
-    data.premiumUntil !== undefined ? data.premiumUntil : existing.premiumUntil;
+  const finalPremiumUntil = resolvedPremiumUntil();
   const willBePremium = data.isPremium === true || (data.isPremium !== false && existing.isPremium);
   const isNewGrant = data.isPremium === true && !existing.isPremium;
   const expiryChanged =
     data.premiumUntil !== undefined &&
-    (existing.premiumUntil?.getTime() ?? null) !== (data.premiumUntil?.getTime() ?? null);
+    (existing.premiumUntil?.getTime() ?? null) !== (finalPremiumUntil?.getTime() ?? null);
   const shouldEmail = willBePremium && (isNewGrant || expiryChanged) && data.isPremium !== false;
 
   let premiumEmailSent = false;
   if (shouldEmail) {
     const result = await sendManualPremiumGrantedEmail(existing.email, {
       name: existing.name,
-      premiumUntil: finalPremiumUntil,
+      premiumUntil: finalPremiumUntil ?? null,
       isNewGrant,
     });
     premiumEmailSent = result.success;
