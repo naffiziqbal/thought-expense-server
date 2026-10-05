@@ -1,4 +1,6 @@
 import prisma from '../config/prisma';
+import { buildSubscriptionSummary, refreshStalePremium } from '../utils/subscription.util';
+import { getRevenueCatSubscriberForUser } from './adminOps.service';
 
 function daysAgo(n: number): Date {
   const d = new Date();
@@ -16,6 +18,7 @@ export async function getOverviewStats() {
     totalUsers,
     premiumUsers,
     premiumWithStoreProduct,
+    premiumManualComp,
     premiumStalePeriod,
     premiumExpiredStatus,
     premiumNoUntil,
@@ -31,6 +34,9 @@ export async function getOverviewStats() {
     prisma.user.count({ where: { isPremium: true } }),
     prisma.user.count({
       where: { isPremium: true, subscriptionProductId: { not: null } },
+    }),
+    prisma.user.count({
+      where: { isPremium: true, subscriptionProductId: null },
     }),
     prisma.user.count({ where: { isPremium: true, premiumUntil: { lt: now } } }),
     prisma.user.count({ where: { isPremium: true, subscriptionStatus: 'expired' } }),
@@ -68,7 +74,13 @@ export async function getOverviewStats() {
     premiumBreakdown: {
       /** Same as premiumUsers — who the app treats as premium today */
       dbFlag: premiumUsers,
-      /** Closer to RevenueCat “active subscriptions”: store product + non-expired period + not expired status */
+      /** Comp / fee / admin grant — no Play or App Store product id on file */
+      manualComp: premiumManualComp,
+      /** Premium with a store product id (RevenueCat webhook path) */
+      storeBacked: premiumWithStoreProduct,
+      /** Active paying: store product + valid period + status active/cancelled/grace */
+      payingActive: premiumHeuristicActive,
+      /** @deprecated use payingActive */
       heuristicBillable: premiumHeuristicActive,
       withStoreProduct: premiumWithStoreProduct,
       stalePeriodEnd: premiumStalePeriod,
@@ -119,10 +131,40 @@ export async function getGrowthSeries(days = 30) {
     .map(([date, v]) => ({ date, ...v }));
 }
 
-export async function listUsers(params: { page: number; limit: number; search?: string }) {
-  const { page, limit, search } = params;
+export type UserAccessFilter = 'all' | 'free' | 'premium' | 'manual' | 'store' | 'paying';
+
+function accessFilterWhere(access: UserAccessFilter | undefined) {
+  const now = new Date();
+  switch (access) {
+    case 'free':
+      return { isPremium: false };
+    case 'premium':
+      return { isPremium: true };
+    case 'manual':
+      return { isPremium: true, subscriptionProductId: null };
+    case 'store':
+      return { isPremium: true, subscriptionProductId: { not: null } };
+    case 'paying':
+      return {
+        isPremium: true,
+        subscriptionProductId: { not: null },
+        subscriptionStatus: { in: ['active', 'cancelled', 'grace'] },
+        OR: [{ premiumUntil: null }, { premiumUntil: { gt: now } }],
+      };
+    default:
+      return {};
+  }
+}
+
+export async function listUsers(params: {
+  page: number;
+  limit: number;
+  search?: string;
+  access?: UserAccessFilter;
+}) {
+  const { page, limit, search, access } = params;
   const skip = (page - 1) * limit;
-  const where = search
+  const searchWhere = search
     ? {
         OR: [
           { email: { contains: search, mode: 'insensitive' as const } },
@@ -130,8 +172,13 @@ export async function listUsers(params: { page: number; limit: number; search?: 
         ],
       }
     : {};
+  const accessWhere = accessFilterWhere(access);
+  const where =
+    Object.keys(searchWhere).length && Object.keys(accessWhere).length
+      ? { AND: [searchWhere, accessWhere] }
+      : { ...searchWhere, ...accessWhere };
 
-  const [items, total] = await Promise.all([
+  const [rows, total] = await Promise.all([
     prisma.user.findMany({
       where,
       skip,
@@ -155,59 +202,185 @@ export async function listUsers(params: { page: number; limit: number; search?: 
     prisma.user.count({ where }),
   ]);
 
+  const items = rows.map((u) => ({
+    ...u,
+    premiumAccess: premiumSource({
+      isPremium: u.isPremium,
+      subscriptionProductId: u.subscriptionProductId,
+    }),
+  }));
+
   return {
     items,
     pagination: { page, limit, total, pages: Math.ceil(total / limit) },
   };
 }
 
-export async function getUserDetail(userId: string) {
-  return prisma.user.findUnique({
-    where: { id: userId },
+const adminUserDetailSelect = {
+  id: true,
+  email: true,
+  name: true,
+  currency: true,
+  isPremium: true,
+  premiumSince: true,
+  premiumUntil: true,
+  subscriptionStatus: true,
+  subscriptionProductId: true,
+  subscriptionStore: true,
+  pushEnabled: true,
+  budgetAlertsEnabled: true,
+  tokenVersion: true,
+  createdAt: true,
+  updatedAt: true,
+  _count: {
     select: {
-      id: true,
-      email: true,
-      name: true,
-      currency: true,
-      isPremium: true,
-      premiumSince: true,
-      premiumUntil: true,
-      subscriptionStatus: true,
-      subscriptionProductId: true,
-      subscriptionStore: true,
-      pushEnabled: true,
-      budgetAlertsEnabled: true,
-      createdAt: true,
-      updatedAt: true,
-      _count: {
-        select: {
-          expenses: true,
-          insights: true,
-          goals: true,
-          budgets: true,
-          deviceTokens: true,
-          recurringRules: true,
-        },
-      },
+      expenses: true,
+      insights: true,
+      goals: true,
+      budgets: true,
+      deviceTokens: true,
+      recurringRules: true,
     },
+  },
+} as const;
+
+/** Null when subscription fields look consistent; otherwise a short support note. */
+export function subscriptionDriftNote(user: {
+  isPremium: boolean;
+  subscriptionStatus: string | null;
+  premiumUntil: Date | null;
+  subscriptionProductId: string | null;
+}): string | null {
+  const now = Date.now();
+  if (user.isPremium && user.premiumUntil && user.premiumUntil.getTime() < now) {
+    return 'Premium flag is still true but premiumUntil is in the past (run Billing → Reconcile stale).';
+  }
+  if (user.isPremium && user.subscriptionStatus === 'expired') {
+    return 'Premium flag is true but subscriptionStatus is expired.';
+  }
+  if (!user.isPremium && ['active', 'grace'].includes(user.subscriptionStatus ?? '')) {
+    if (user.premiumUntil && user.premiumUntil.getTime() > now) {
+      return 'User is not premium but status is active/grace with a future premiumUntil.';
+    }
+  }
+  if (!user.isPremium && user.subscriptionStatus === 'active' && user.subscriptionProductId) {
+    return 'Store product on file and status active, but isPremium is false.';
+  }
+  return null;
+}
+
+export function premiumSource(user: {
+  isPremium: boolean;
+  subscriptionProductId: string | null;
+}): 'none' | 'store' | 'manual' {
+  if (!user.isPremium) return 'none';
+  return user.subscriptionProductId ? 'store' : 'manual';
+}
+
+/** Same billing refresh as GET /api/billing/status so admin matches in-app access. */
+export async function getUserDetail(userId: string) {
+  const row = await prisma.user.findUnique({
+    where: { id: userId },
+    select: adminUserDetailSelect,
   });
+  if (!row) return null;
+
+  const billing = await refreshStalePremium(userId, row);
+  const subscription = buildSubscriptionSummary(billing);
+  const access = premiumSource({
+    isPremium: billing.isPremium,
+    subscriptionProductId: billing.subscriptionProductId,
+  });
+  const drift = subscriptionDriftNote({
+    isPremium: billing.isPremium,
+    subscriptionStatus: billing.subscriptionStatus,
+    premiumUntil: billing.premiumUntil,
+    subscriptionProductId: billing.subscriptionProductId,
+  });
+
+  const [billingEvents, recentExpenses, lastExpense, revenueCat] = await Promise.all([
+    prisma.billingWebhookEvent.findMany({
+      where: { userId },
+      orderBy: { createdAt: 'desc' },
+      take: 20,
+      select: {
+        id: true,
+        externalEventId: true,
+        eventType: true,
+        productId: true,
+        store: true,
+        outcome: true,
+        createdAt: true,
+      },
+    }),
+    prisma.expense.findMany({
+      where: { userId },
+      orderBy: { date: 'desc' },
+      take: 12,
+      select: {
+        id: true,
+        description: true,
+        amount: true,
+        currency: true,
+        category: true,
+        date: true,
+      },
+    }),
+    prisma.expense.findFirst({
+      where: { userId },
+      orderBy: { date: 'desc' },
+      select: { date: true },
+    }),
+    getRevenueCatSubscriberForUser(userId, billing.isPremium),
+  ]);
+
+  return {
+    ...row,
+    isPremium: billing.isPremium,
+    premiumSince: billing.premiumSince,
+    premiumUntil: billing.premiumUntil,
+    subscriptionStatus: billing.subscriptionStatus,
+    subscriptionProductId: billing.subscriptionProductId,
+    subscriptionStore: billing.subscriptionStore,
+    subscription,
+    premiumAccess: access,
+    subscriptionDrift: drift,
+    lastExpenseAt: lastExpense?.date ?? null,
+    billingEvents,
+    recentExpenses,
+    revenueCat,
+  };
 }
 
 export async function updateUserAdmin(
   userId: string,
   data: { isPremium?: boolean; subscriptionStatus?: string | null }
 ) {
-  return prisma.user.update({
+  const patch: {
+    isPremium?: boolean;
+    subscriptionStatus?: string | null;
+    premiumSince?: Date;
+  } = { ...data };
+
+  if (data.isPremium === true) {
+    const existing = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { premiumSince: true, subscriptionStatus: true, subscriptionProductId: true },
+    });
+    if (!existing?.premiumSince) patch.premiumSince = new Date();
+    if (!existing?.subscriptionProductId && !existing?.subscriptionStatus) {
+      patch.subscriptionStatus = 'active';
+    }
+  } else if (data.isPremium === false) {
+    patch.subscriptionStatus = 'expired';
+  }
+
+  await prisma.user.update({
     where: { id: userId },
-    data,
-    select: {
-      id: true,
-      email: true,
-      isPremium: true,
-      subscriptionStatus: true,
-      premiumUntil: true,
-    },
+    data: patch,
   });
+
+  return getUserDetail(userId);
 }
 
 export async function revokeUserSessions(userId: string) {

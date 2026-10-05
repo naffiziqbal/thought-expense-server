@@ -37,7 +37,16 @@ export const getUsers = asyncHandler(async (req: AdminAuthRequest, res: Response
   const page = Math.max(1, parseInt(String(req.query.page || '1'), 10) || 1);
   const limit = Math.min(100, Math.max(10, parseInt(String(req.query.limit || '20'), 10) || 20));
   const search = typeof req.query.search === 'string' ? req.query.search.trim() : undefined;
-  const data = await listUsers({ page, limit, search: search || undefined });
+  const accessRaw = typeof req.query.access === 'string' ? req.query.access : 'all';
+  const access =
+    accessRaw === 'free' ||
+    accessRaw === 'premium' ||
+    accessRaw === 'manual' ||
+    accessRaw === 'store' ||
+    accessRaw === 'paying'
+      ? accessRaw
+      : 'all';
+  const data = await listUsers({ page, limit, search: search || undefined, access });
   res.json({ success: true, data });
 });
 
@@ -65,6 +74,7 @@ export const patchUser = asyncHandler(
     }
     try {
       const user = await updateUserAdmin(req.params.id, data);
+      if (!user) return next(new AppError('User not found', 404));
       if (req.admin) {
         await logAdminAction({
           adminId: req.admin.id,

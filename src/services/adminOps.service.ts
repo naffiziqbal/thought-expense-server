@@ -107,6 +107,104 @@ interface RcSubscriberResponse {
   };
 }
 
+async function lookupRevenueCatEntitlement(
+  secret: string,
+  userId: string,
+  entitlementId: string
+): Promise<
+  | { found: false; status: number }
+  | { found: true; rcPremium: boolean; expiresDate: string | null; productId: string | null }
+> {
+  const res = await fetch(
+    `https://api.revenuecat.com/v1/subscribers/${encodeURIComponent(userId)}`,
+    {
+      headers: {
+        Authorization: `Bearer ${secret}`,
+        'Content-Type': 'application/json',
+      },
+    }
+  );
+  if (!res.ok) {
+    return { found: false, status: res.status };
+  }
+  const body = (await res.json()) as RcSubscriberResponse;
+  const ent = body.subscriber?.entitlements?.[entitlementId];
+  const rcPremium = ent
+    ? !ent.expires_date || new Date(ent.expires_date).getTime() > Date.now()
+    : false;
+  return {
+    found: true,
+    rcPremium,
+    expiresDate: ent?.expires_date ?? null,
+    productId: ent?.product_identifier ?? null,
+  };
+}
+
+export async function getRevenueCatSubscriberForUser(userId: string, dbPremium: boolean) {
+  const secret = process.env.REVENUECAT_SECRET_API_KEY?.trim();
+  if (!secret) {
+    return {
+      configured: false as const,
+      message: 'Set REVENUECAT_SECRET_API_KEY (RevenueCat secret API key) to compare entitlements.',
+    };
+  }
+
+  const entitlementId = process.env.REVENUECAT_ENTITLEMENT_ID?.trim() || 'premium';
+  try {
+    const lookup = await lookupRevenueCatEntitlement(secret, userId, entitlementId);
+    if (!lookup.found) {
+      const reason =
+        lookup.status === 404
+          ? dbPremium
+            ? 'No RevenueCat subscriber for this app user id'
+            : 'No subscriber (expected for free users)'
+          : `RevenueCat API returned ${lookup.status}`;
+      return {
+        configured: true as const,
+        entitlementId,
+        dbPremium,
+        rcPremium: false,
+        inSync: !dbPremium,
+        subscriberFound: false,
+        expiresDate: null,
+        productId: null,
+        reason,
+      };
+    }
+    const inSync = lookup.rcPremium === dbPremium;
+    let reason: string | null = null;
+    if (!inSync) {
+      reason = lookup.rcPremium
+        ? 'RevenueCat entitlement active but DB is not premium'
+        : 'DB is premium but RevenueCat entitlement is inactive or missing';
+    }
+    return {
+      configured: true as const,
+      entitlementId,
+      dbPremium,
+      rcPremium: lookup.rcPremium,
+      inSync,
+      subscriberFound: true,
+      expiresDate: lookup.expiresDate,
+      productId: lookup.productId,
+      reason,
+    };
+  } catch (err) {
+    logger.warn({ err, userId }, 'RevenueCat subscriber lookup failed');
+    return {
+      configured: true as const,
+      entitlementId,
+      dbPremium,
+      rcPremium: false,
+      inSync: false,
+      subscriberFound: false,
+      expiresDate: null,
+      productId: null,
+      reason: 'RevenueCat request failed',
+    };
+  }
+}
+
 export async function getRevenueCatSyncCheck(limit = 200) {
   const secret = process.env.REVENUECAT_SECRET_API_KEY?.trim();
   if (!secret) {
@@ -142,45 +240,27 @@ export async function getRevenueCatSyncCheck(limit = 200) {
 
   for (const user of candidates) {
     try {
-      const res = await fetch(
-        `https://api.revenuecat.com/v1/subscribers/${encodeURIComponent(user.id)}`,
-        {
-          headers: {
-            Authorization: `Bearer ${secret}`,
-            'Content-Type': 'application/json',
-          },
-        }
-      );
-      if (!res.ok) {
-        if (res.status === 404) {
-          if (user.isPremium) {
-            mismatches.push({
-              userId: user.id,
-              email: user.email,
-              dbPremium: user.isPremium,
-              rcPremium: false,
-              reason: 'DB premium but no RevenueCat subscriber',
-            });
-          }
-          continue;
+      const lookup = await lookupRevenueCatEntitlement(secret, user.id, entitlementId);
+      if (!lookup.found) {
+        if (user.isPremium && lookup.status === 404) {
+          mismatches.push({
+            userId: user.id,
+            email: user.email,
+            dbPremium: user.isPremium,
+            rcPremium: false,
+            reason: 'DB premium but no RevenueCat subscriber',
+          });
         }
         continue;
       }
-      const body = (await res.json()) as RcSubscriberResponse;
-      const ent = body.subscriber?.entitlements?.[entitlementId];
-      const rcPremium = ent
-        ? !ent.expires_date || new Date(ent.expires_date).getTime() > Date.now()
-        : false;
-
-      if (rcPremium) rcActiveCount += 1;
-
-      if (rcPremium !== user.isPremium) {
+      if (lookup.rcPremium) rcActiveCount += 1;
+      if (lookup.rcPremium !== user.isPremium) {
         mismatches.push({
           userId: user.id,
           email: user.email,
           dbPremium: user.isPremium,
-          rcPremium,
-          reason: rcPremium
+          rcPremium: lookup.rcPremium,
+          reason: lookup.rcPremium
             ? 'RevenueCat active, DB not premium'
             : 'DB premium, RevenueCat inactive',
         });
