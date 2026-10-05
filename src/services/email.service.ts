@@ -308,6 +308,7 @@ export async function sendManualPremiumGrantedEmail(
       : `Your complimentary <strong>Premium</strong> on ${APP_NAME} has a new end date.`;
 
     const premiumUrl = `${APP_URL}/dashboard/premium`;
+    const androidAppUrl = `${APP_URL}/get-app`;
 
     const { error } = await getResend().emails.send({
       from: FROM_EMAIL,
@@ -328,7 +329,11 @@ export async function sendManualPremiumGrantedEmail(
           <p style="color: #374151; line-height: 1.65; margin: 0 0 8px; font-size: 15px;">
             Premium includes 12 months of history, exports, deeper insights, and unlimited AI assistant — open the app and explore.
           </p>
-          ${primaryButton(premiumUrl, 'Open Premium in app')}
+          ${primaryButton(premiumUrl, 'Open Premium on web')}
+          <p style="color: #6b7280; font-size: 14px; line-height: 1.5; margin-top: 16px;">
+            Using Android?
+            <a href="${androidAppUrl}" style="color: #0d9488; font-weight: 600;">Get the app on Google Play</a>
+          </p>
           <p style="color: #6b7280; font-size: 14px; line-height: 1.5; margin-top: 20px;">
             Questions? Reply to this email or contact support — we’re happy to help.
           </p>
