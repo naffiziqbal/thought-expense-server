@@ -252,6 +252,100 @@ export async function sendWeeklyBriefingEmail(
 /**
  * Send password reset OTP (6-digit code) email
  */
+function formatPremiumUntil(until: Date | null): { label: string; detail: string } {
+  if (!until) {
+    return {
+      label: 'No fixed end date',
+      detail: 'Your complimentary Premium access stays active until we let you know otherwise.',
+    };
+  }
+  const label = until.toLocaleDateString('en-US', {
+    weekday: 'long',
+    month: 'long',
+    day: 'numeric',
+    year: 'numeric',
+    timeZone: 'UTC',
+  });
+  return {
+    label,
+    detail: `Premium access is active through <strong>${escapeHtml(label)}</strong> (UTC calendar date).`,
+  };
+}
+
+export interface ManualPremiumEmailPayload {
+  name: string | null;
+  premiumUntil: Date | null;
+  /** true = first grant; false = expiry date updated */
+  isNewGrant: boolean;
+}
+
+/**
+ * Notify a user that an admin granted or extended complimentary Premium.
+ */
+export async function sendManualPremiumGrantedEmail(
+  to: string,
+  payload: ManualPremiumEmailPayload
+): Promise<{ success: boolean; error?: string }> {
+  try {
+    if (!process.env.RESEND_API_KEY) {
+      logger.error('RESEND_API_KEY is not set');
+      return { success: false, error: 'Email service not configured' };
+    }
+
+    const greeting = payload.name ? `Hi ${escapeHtml(payload.name)},` : 'Hi there,';
+    const { label, detail } = formatPremiumUntil(payload.premiumUntil);
+    const headline = payload.isNewGrant ? 'You’ve got Premium' : 'Your Premium access was updated';
+    const intro = payload.isNewGrant
+      ? `We’ve activated <strong>Premium</strong> on your ${APP_NAME} account — on us.`
+      : `Your complimentary <strong>Premium</strong> on ${APP_NAME} has a new end date.`;
+
+    const premiumUrl = `${APP_URL}/dashboard/premium`;
+
+    const { error } = await getResend().emails.send({
+      from: FROM_EMAIL,
+      to: [to],
+      subject: payload.isNewGrant
+        ? `Premium is active on your ${APP_NAME} account`
+        : `Your ${APP_NAME} Premium access was updated`,
+      html: emailShell(
+        `
+          <p style="color: #6b7280; font-size: 14px; margin: 20px 0 4px;">${greeting}</p>
+          <h1 style="font-size: 22px; margin: 0 0 16px; color: #111827; line-height: 1.35;">${headline}</h1>
+          <p style="color: #374151; line-height: 1.65; margin: 0 0 16px; font-size: 15px;">${intro}</p>
+          <div style="margin: 0 0 24px; padding: 20px 22px; background: #f0fdfa; border-radius: 12px; border: 1px solid #99f6e4;">
+            <div style="font-size: 13px; text-transform: uppercase; letter-spacing: 0.04em; color: #0f766e; margin-bottom: 8px;">Access until</div>
+            <div style="font-size: 22px; font-weight: 700; color: #115e59; line-height: 1.3;">${escapeHtml(label)}</div>
+            <p style="color: #0f766e; margin: 12px 0 0; font-size: 14px; line-height: 1.55;">${detail}</p>
+          </div>
+          <p style="color: #374151; line-height: 1.65; margin: 0 0 8px; font-size: 15px;">
+            Premium includes 12 months of history, exports, deeper insights, and unlimited AI assistant — open the app and explore.
+          </p>
+          ${primaryButton(premiumUrl, 'Open Premium in app')}
+          <p style="color: #6b7280; font-size: 14px; line-height: 1.5; margin-top: 20px;">
+            Questions? Reply to this email or contact support — we’re happy to help.
+          </p>
+        `,
+        payload.isNewGrant
+          ? `Premium is active on your ${APP_NAME} account. Access until: ${label}.`
+          : `Your Premium access was updated. New end date: ${label}.`
+      ),
+    });
+
+    if (error) {
+      logger.error({ err: error }, 'Resend error (manual premium email)');
+      return { success: false, error: error.message };
+    }
+
+    return { success: true };
+  } catch (err) {
+    logger.error({ err }, 'Failed to send manual premium email');
+    return {
+      success: false,
+      error: err instanceof Error ? err.message : 'Failed to send email',
+    };
+  }
+}
+
 export async function sendPasswordResetOtpEmail(
   to: string,
   otp: string

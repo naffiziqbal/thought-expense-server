@@ -1,6 +1,8 @@
 import prisma from '../config/prisma';
+import { logger } from '../config/logger';
 import { buildSubscriptionSummary, refreshStalePremium } from '../utils/subscription.util';
 import { getRevenueCatSubscriberForUser } from './adminOps.service';
+import { sendManualPremiumGrantedEmail } from './email.service';
 import { moderationStatus } from '../utils/userModeration.util';
 
 function daysAgo(n: number): Date {
@@ -353,10 +355,29 @@ export async function updateUserAdmin(
     subscriptionStatus?: string | null;
     premiumUntil?: Date | null;
   }
-) {
+): Promise<{ user: Awaited<ReturnType<typeof getUserDetail>>; premiumEmailSent: boolean }> {
+  const existing = await prisma.user.findUnique({
+    where: { id: userId },
+    select: {
+      email: true,
+      name: true,
+      isPremium: true,
+      premiumSince: true,
+      premiumUntil: true,
+      subscriptionStatus: true,
+      subscriptionProductId: true,
+      subscriptionStore: true,
+    },
+  });
+  if (!existing) {
+    throw new Error('User not found');
+  }
+
   const patch: {
     isPremium?: boolean;
     subscriptionStatus?: string | null;
+    subscriptionProductId?: string | null;
+    subscriptionStore?: string | null;
     premiumSince?: Date;
     premiumUntil?: Date | null;
   } = {};
@@ -366,14 +387,11 @@ export async function updateUserAdmin(
   if (data.premiumUntil !== undefined) patch.premiumUntil = data.premiumUntil;
 
   if (data.isPremium === true) {
-    const existing = await prisma.user.findUnique({
-      where: { id: userId },
-      select: { premiumSince: true, subscriptionStatus: true, subscriptionProductId: true },
-    });
-    if (!existing?.premiumSince) patch.premiumSince = new Date();
-    if (!existing?.subscriptionProductId && !existing?.subscriptionStatus) {
-      patch.subscriptionStatus = 'active';
-    }
+    if (!existing.premiumSince) patch.premiumSince = new Date();
+    // Admin comp: clear store ids so billing segments stay "manual"
+    patch.subscriptionProductId = null;
+    patch.subscriptionStore = null;
+    patch.subscriptionStatus = 'active';
   } else if (data.isPremium === false) {
     patch.subscriptionStatus = 'expired';
   }
@@ -383,7 +401,33 @@ export async function updateUserAdmin(
     data: patch,
   });
 
-  return getUserDetail(userId);
+  const finalPremiumUntil =
+    data.premiumUntil !== undefined ? data.premiumUntil : existing.premiumUntil;
+  const willBePremium = data.isPremium === true || (data.isPremium !== false && existing.isPremium);
+  const isNewGrant = data.isPremium === true && !existing.isPremium;
+  const expiryChanged =
+    data.premiumUntil !== undefined &&
+    (existing.premiumUntil?.getTime() ?? null) !== (data.premiumUntil?.getTime() ?? null);
+  const shouldEmail = willBePremium && (isNewGrant || expiryChanged) && data.isPremium !== false;
+
+  let premiumEmailSent = false;
+  if (shouldEmail) {
+    const result = await sendManualPremiumGrantedEmail(existing.email, {
+      name: existing.name,
+      premiumUntil: finalPremiumUntil,
+      isNewGrant,
+    });
+    premiumEmailSent = result.success;
+    if (!result.success) {
+      logger.warn(
+        { userId, email: existing.email, error: result.error },
+        'Manual premium granted but notification email failed'
+      );
+    }
+  }
+
+  const user = await getUserDetail(userId);
+  return { user, premiumEmailSent };
 }
 
 export async function revokeUserSessions(userId: string) {
