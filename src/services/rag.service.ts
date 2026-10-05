@@ -1,6 +1,11 @@
 import prisma from '../config/prisma';
 import { generateEmbedding } from './gemini.service';
-import { upsertExpenseVector, querySimilarExpenses, deleteExpenseVector, isPineconeReady } from './pinecone.service';
+import {
+  upsertExpenseVector,
+  querySimilarExpenses,
+  deleteExpenseVector,
+  isPineconeReady,
+} from './pinecone.service';
 import { logger } from '../config/logger';
 
 interface UserContextItem {
@@ -44,13 +49,13 @@ export const getUserContext = async (userId: string): Promise<UserContextItem[]>
     const mappings = await prisma.categoryMapping.findMany({
       where: { userId },
       orderBy: { confidence: 'desc' },
-      take: 50
+      take: 50,
     });
 
-    return mappings.map(m => ({
+    return mappings.map((m) => ({
       keyword: m.keyword,
       category: m.category,
-      confidence: m.confidence
+      confidence: m.confidence,
     }));
   } catch (error) {
     logger.error({ err: error }, 'Error fetching user context');
@@ -76,19 +81,19 @@ export const updateCategoryMapping = async (
         userId_keyword_category: {
           userId,
           keyword: normalizedKeyword,
-          category
-        }
+          category,
+        },
       },
       update: {
         confidence: 1.0,
-        updatedAt: new Date()
+        updatedAt: new Date(),
       },
       create: {
         userId,
         keyword: normalizedKeyword,
         category,
-        confidence: 1.0
-      }
+        confidence: 1.0,
+      },
     });
 
     return mapping;
@@ -106,7 +111,7 @@ export const storeExpenseEmbedding = async (expense: Expense): Promise<boolean> 
   try {
     // Generate embedding from description + category
     const text = `${expense.description} ${expense.category}`;
-    const embedding = await generateEmbedding(text);
+    const embedding = await generateEmbedding(text, expense.userId);
 
     const amount = Number(expense.amount);
     const upserted = await upsertExpenseVector(expense.id, embedding, {
@@ -121,7 +126,7 @@ export const storeExpenseEmbedding = async (expense: Expense): Promise<boolean> 
     // Store vector reference in database (upsert: re-embeds happen on expense edits)
     const vectorMetadata = {
       embeddingModel: process.env.EMBEDDING_MODEL || 'gemini-embedding-001',
-      timestamp: new Date().toISOString()
+      timestamp: new Date().toISOString(),
     };
     await prisma.vector.upsert({
       where: { expenseId: expense.id },
@@ -129,8 +134,8 @@ export const storeExpenseEmbedding = async (expense: Expense): Promise<boolean> 
       create: {
         expenseId: expense.id,
         vectorId: expense.id,
-        metadata: vectorMetadata
-      }
+        metadata: vectorMetadata,
+      },
     });
 
     return true;
@@ -151,7 +156,7 @@ export const findSimilarExpenses = async (
   try {
     if (!isPineconeReady()) return [];
     // Generate embedding for query
-    const embedding = await generateEmbedding(description);
+    const embedding = await generateEmbedding(description, userId);
 
     // Query Pinecone
     const results = await querySimilarExpenses(embedding, userId, limit);
@@ -159,7 +164,9 @@ export const findSimilarExpenses = async (
     const expenseIds = [
       ...new Set(
         results
-          .map((r) => (typeof r.metadata?.expenseId === 'string' ? r.metadata.expenseId : r.id) || '')
+          .map(
+            (r) => (typeof r.metadata?.expenseId === 'string' ? r.metadata.expenseId : r.id) || ''
+          )
           .filter((id) => id.length > 0)
       ),
     ];
@@ -169,7 +176,7 @@ export const findSimilarExpenses = async (
     const expenses = await prisma.expense.findMany({
       where: {
         id: { in: expenseIds },
-        userId
+        userId,
       },
       select: {
         id: true,
@@ -177,13 +184,13 @@ export const findSimilarExpenses = async (
         amount: true,
         currency: true,
         category: true,
-        date: true
+        date: true,
       },
-      orderBy: { date: 'desc' }
+      orderBy: { date: 'desc' },
     });
 
     // Add similarity scores
-    return expenses.map(expense => {
+    return expenses.map((expense) => {
       const match = results.find((r) => (r.metadata?.expenseId || r.id) === expense.id);
       return {
         ...expense,
@@ -205,19 +212,18 @@ export const suggestCategory = async (
 ): Promise<CategorySuggestion | null> => {
   try {
     const similarExpenses = await findSimilarExpenses(userId, description, 10);
-    
+
     if (similarExpenses.length === 0) return null;
 
     // Count categories weighted by similarity
     const categoryScores: Record<string, number> = {};
-    similarExpenses.forEach(expense => {
+    similarExpenses.forEach((expense) => {
       const score = expense.similarity || 0.5;
       categoryScores[expense.category] = (categoryScores[expense.category] || 0) + score;
     });
 
     // Find category with highest score
-    const topCategory = Object.entries(categoryScores)
-      .sort(([, a], [, b]) => b - a)[0];
+    const topCategory = Object.entries(categoryScores).sort(([, a], [, b]) => b - a)[0];
 
     if (!topCategory) return null;
 
@@ -227,7 +233,7 @@ export const suggestCategory = async (
 
     return {
       category,
-      confidence: Math.min(confidence, 0.95)
+      confidence: Math.min(confidence, 0.95),
     };
   } catch (error) {
     logger.error({ err: error }, 'Error suggesting category');
@@ -241,9 +247,9 @@ export const suggestCategory = async (
 export const deleteExpenseEmbedding = async (expenseId: string): Promise<boolean> => {
   try {
     await deleteExpenseVector(expenseId);
-    
+
     await prisma.vector.deleteMany({
-      where: { expenseId }
+      where: { expenseId },
     });
 
     return true;

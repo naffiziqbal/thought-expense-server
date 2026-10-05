@@ -2,6 +2,7 @@ import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 import { AppError } from './error.middleware';
 import prisma from '../config/prisma';
+import { moderationBlockMessage, moderationStatus } from '../utils/userModeration.util';
 
 interface JwtPayload {
   id: string;
@@ -57,6 +58,8 @@ export const protect = async (
           isPremium: true,
           createdAt: true,
           tokenVersion: true,
+          suspendedAt: true,
+          bannedAt: true,
         },
       });
 
@@ -64,7 +67,12 @@ export const protect = async (
         return next(new AppError('User no longer exists', 401));
       }
 
-      const { tokenVersion, ...sessionUser } = user;
+      const mod = moderationStatus(user);
+      if (mod !== 'active') {
+        return next(new AppError(moderationBlockMessage(mod), 403));
+      }
+
+      const { tokenVersion, suspendedAt: _s, bannedAt: _b, ...sessionUser } = user;
       const tokenVer = typeof decoded.ver === 'number' ? decoded.ver : 0;
       if (tokenVer !== tokenVersion) {
         return next(new AppError('Not authorized to access this route', 401));

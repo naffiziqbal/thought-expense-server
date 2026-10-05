@@ -14,7 +14,8 @@ import {
   revokeUserSessions,
   updateUserAdmin,
 } from '../services/admin.service';
-import { getAiUsageSeries } from '../services/aiMetrics.service';
+import { applyUserModeration, type ModerationAction } from '../services/userModeration.service';
+import { getAiUsageSeries, getUserAiUsageSummary } from '../services/aiMetrics.service';
 import {
   getQueueMonitorStats,
   getRagHealthStats,
@@ -60,14 +61,39 @@ export const getUser = asyncHandler(
 
 export const patchUser = asyncHandler(
   async (req: AdminAuthRequest, res: Response, next: NextFunction) => {
-    const { isPremium, subscriptionStatus } = req.body ?? {};
-    const data: { isPremium?: boolean; subscriptionStatus?: string | null } = {};
+    const { isPremium, subscriptionStatus, premiumUntil } = req.body ?? {};
+    const data: {
+      isPremium?: boolean;
+      subscriptionStatus?: string | null;
+      premiumUntil?: Date | null;
+    } = {};
     if (typeof isPremium === 'boolean') data.isPremium = isPremium;
     if (subscriptionStatus !== undefined) {
       data.subscriptionStatus =
         subscriptionStatus === null || subscriptionStatus === ''
           ? null
           : String(subscriptionStatus);
+    }
+    if (premiumUntil !== undefined) {
+      if (premiumUntil === null || premiumUntil === '') {
+        data.premiumUntil = null;
+      } else {
+        const until = new Date(String(premiumUntil));
+        if (Number.isNaN(until.getTime())) {
+          return next(new AppError('Invalid premiumUntil date', 400));
+        }
+        if (data.isPremium !== false && until.getTime() <= Date.now()) {
+          return next(
+            new AppError('premiumUntil must be in the future when granting premium', 400)
+          );
+        }
+        data.premiumUntil = until;
+      }
+    }
+    if (data.isPremium === true && data.premiumUntil === undefined) {
+      return next(
+        new AppError('premiumUntil is required when granting premium (or set lifetime: true)', 400)
+      );
     }
     if (Object.keys(data).length === 0) {
       return next(new AppError('No valid fields to update', 400));
@@ -87,6 +113,44 @@ export const patchUser = asyncHandler(
       }
       res.json({ success: true, data: user });
     } catch {
+      return next(new AppError('User not found', 404));
+    }
+  }
+);
+
+export const postUserModeration = asyncHandler(
+  async (req: AdminAuthRequest, res: Response, next: NextFunction) => {
+    const actionRaw = req.body?.action;
+    const action =
+      actionRaw === 'suspend' || actionRaw === 'ban' || actionRaw === 'reactivate'
+        ? (actionRaw as ModerationAction)
+        : null;
+    if (!action) {
+      return next(new AppError('action must be suspend, ban, or reactivate', 400));
+    }
+    const note = typeof req.body?.note === 'string' ? req.body.note : undefined;
+    try {
+      const user = await applyUserModeration(req.params.id, action, note);
+      if (!user) return next(new AppError('User not found', 404));
+      if (req.admin) {
+        await logAdminAction({
+          adminId: req.admin.id,
+          action: `user.${action}`,
+          targetType: 'user',
+          targetId: user.id,
+          metadata: { note: note?.trim() || null },
+          ipAddress: clientIp(req),
+        });
+      }
+      res.json({ success: true, data: user });
+    } catch (err) {
+      const code = err instanceof Error ? err.message : '';
+      if (code === 'USER_BANNED') {
+        return next(new AppError('User is banned; reactivate before suspending', 409));
+      }
+      if (code === 'ALREADY_SUSPENDED' || code === 'ALREADY_BANNED' || code === 'ALREADY_ACTIVE') {
+        return next(new AppError('No change — account is already in that state', 409));
+      }
       return next(new AppError('User not found', 404));
     }
   }
@@ -151,6 +215,23 @@ export const getAiUsage = asyncHandler(async (req: AdminAuthRequest, res: Respon
   const data = await getAiUsageSeries(days);
   res.json({ success: true, data });
 });
+
+export const getUserAiUsage = asyncHandler(
+  async (req: AdminAuthRequest, res: Response, next: NextFunction) => {
+    const user = await getUserDetail(req.params.id);
+    if (!user) return next(new AppError('User not found', 404));
+    const days = Math.min(90, Math.max(7, parseInt(String(req.query.days || '30'), 10) || 30));
+    const data = await getUserAiUsageSummary(req.params.id, days);
+    res.json({
+      success: true,
+      data: {
+        ...data,
+        days,
+        note: 'Counts from deploy forward; tokens from Gemini usageMetadata when available.',
+      },
+    });
+  }
+);
 
 export const getQueueMonitor = asyncHandler(async (_req: AdminAuthRequest, res: Response) => {
   const data = await getQueueMonitorStats();

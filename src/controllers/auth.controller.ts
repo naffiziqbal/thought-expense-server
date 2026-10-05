@@ -14,6 +14,7 @@ import { logger } from '../config/logger';
 import { uploadToSpace, deleteFromSpace } from '../utils/storage';
 import { authUserSelect, formatAuthUser } from '../utils/authUser.util';
 import { refreshStalePremium } from '../utils/subscription.util';
+import { moderationBlockMessage, moderationStatus } from '../utils/userModeration.util';
 
 // Generate JWT token
 const generateToken = (userId: string, tokenVersion = 0): string => {
@@ -114,6 +115,11 @@ export const login = asyncHandler(async (req: AuthRequest, res: Response, next: 
 
   if (!isPasswordValid) {
     return next(new AppError('Invalid email or password', 401));
+  }
+
+  const mod = moderationStatus(user);
+  if (mod !== 'active') {
+    return next(new AppError(moderationBlockMessage(mod), 403));
   }
 
   const { password: _, tokenVersion, ...rest } = user;

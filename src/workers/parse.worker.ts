@@ -97,7 +97,14 @@ export const startParseWorkers = () => {
         try {
           const userContext = await getUserContext(userId);
           parsedExpenses = applySelectedExpenseDate(
-            await parseExpenses(rawInput, userCurrency, userContext, selectedDate, 'parse_async'),
+            await parseExpenses(
+              rawInput,
+              userCurrency,
+              userContext,
+              selectedDate,
+              'parse_async',
+              userId
+            ),
             selectedDate
           );
         } catch (err) {
@@ -144,7 +151,7 @@ export const startParseWorkers = () => {
           take: 50,
         });
         const known = rows.map((r) => r.category);
-        const items = await parseCategoryBudgets(text, known);
+        const items = await parseCategoryBudgets(text, known, userId);
         if (!items || items.length === 0) {
           throw new Error('Could not parse any category budgets from input');
         }

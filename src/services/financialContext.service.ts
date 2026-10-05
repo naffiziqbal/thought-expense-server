@@ -16,7 +16,12 @@ async function monthSummary(
   currency: string,
   year: number,
   month: number // 0-based
-): Promise<{ month: string; total: number; byCategory: Record<string, number>; transactionCount: number }> {
+): Promise<{
+  month: string;
+  total: number;
+  byCategory: Record<string, number>;
+  transactionCount: number;
+}> {
   const start = new Date(year, month, 1);
   const end = new Date(year, month + 1, 1);
   const rows = await prisma.expense.findMany({
@@ -70,10 +75,14 @@ export async function buildAdvisorContext(
   // The advisor quotes these numbers verbatim, so the limit has to be in the
   // same currency as the spend it is compared against.
   const [budgetLimit] = budget
-    ? await convertLimitsToCurrency([{ limit: budget.totalLimit, currency: budget.currency }], currency)
+    ? await convertLimitsToCurrency(
+        [{ limit: budget.totalLimit, currency: budget.currency }],
+        currency
+      )
     : [0];
 
   return {
+    userId,
     currency,
     currentMonth: current,
     previousMonth: previous.transactionCount > 0 ? previous : undefined,

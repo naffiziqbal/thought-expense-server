@@ -31,6 +31,32 @@ function fallbackKey(day: string): string {
   return `metrics:ai:fallback:${day}`;
 }
 
+function userDayKey(userId: string, day: string): string {
+  return `metrics:ai:u:${userId}:${day}`;
+}
+
+export type UserAiUsageByKind = Record<string, { calls: number; tokens: number }>;
+
+export async function recordUserAiUsage(
+  userId: string,
+  kind: AiMetricKind,
+  tokens = 0
+): Promise<void> {
+  if (!userId) return;
+  try {
+    const client = getRedisClient();
+    const key = userDayKey(userId, dayKey());
+    await client.hIncrBy(key, `${kind}:calls`, 1);
+    if (tokens > 0) {
+      await client.hIncrBy(key, `${kind}:tokens`, tokens);
+      await client.hIncrBy(key, 'total:tokens', tokens);
+    }
+    await client.expire(key, TTL_SECONDS);
+  } catch (err) {
+    logger.debug({ err, kind, userId }, 'recordUserAiUsage failed');
+  }
+}
+
 export async function recordAiUsage(kind: AiMetricKind, count = 1): Promise<void> {
   try {
     const client = getRedisClient();
@@ -89,4 +115,98 @@ export async function getAiUsageSeries(days: number): Promise<{
   }
 
   return { series, totals, fallbacks };
+}
+
+function parseUserDayHash(raw: Record<string, string>): {
+  byKind: UserAiUsageByKind;
+  totalCalls: number;
+  totalTokens: number;
+} {
+  const byKind: UserAiUsageByKind = {};
+  let totalCalls = 0;
+  let totalTokens = 0;
+
+  for (const [field, value] of Object.entries(raw)) {
+    const n = parseInt(value, 10) || 0;
+    if (field === 'total:tokens') {
+      totalTokens = n;
+      continue;
+    }
+    const match = /^(.+):calls$/.exec(field);
+    if (match) {
+      const kind = match[1];
+      byKind[kind] = { calls: n, tokens: 0 };
+      totalCalls += n;
+    }
+  }
+  for (const [field, value] of Object.entries(raw)) {
+    const n = parseInt(value, 10) || 0;
+    const match = /^(.+):tokens$/.exec(field);
+    if (match) {
+      const kind = match[1];
+      if (!byKind[kind]) byKind[kind] = { calls: 0, tokens: 0 };
+      byKind[kind].tokens = n;
+    }
+  }
+  if (totalTokens === 0) {
+    totalTokens = Object.values(byKind).reduce((a, k) => a + k.tokens, 0);
+  }
+
+  return { byKind, totalCalls, totalTokens };
+}
+
+export async function getUserAiUsageSummary(
+  userId: string,
+  days: number
+): Promise<{
+  series: Array<{
+    date: string;
+    totalCalls: number;
+    totalTokens: number;
+    byKind: UserAiUsageByKind;
+  }>;
+  totals: { calls: number; tokens: number };
+  byKind: UserAiUsageByKind;
+}> {
+  const series: Array<{
+    date: string;
+    totalCalls: number;
+    totalTokens: number;
+    byKind: UserAiUsageByKind;
+  }> = [];
+  const byKind: UserAiUsageByKind = {};
+  let totalCalls = 0;
+  let totalTokens = 0;
+
+  try {
+    const client = getRedisClient();
+    for (let i = days - 1; i >= 0; i--) {
+      const d = new Date();
+      d.setUTCDate(d.getUTCDate() - i);
+      const date = dayKey(d);
+      const raw = await client.hGetAll(userDayKey(userId, date));
+      const day =
+        Object.keys(raw).length > 0
+          ? parseUserDayHash(raw)
+          : { byKind: {}, totalCalls: 0, totalTokens: 0 };
+
+      for (const [kind, stats] of Object.entries(day.byKind)) {
+        if (!byKind[kind]) byKind[kind] = { calls: 0, tokens: 0 };
+        byKind[kind].calls += stats.calls;
+        byKind[kind].tokens += stats.tokens;
+      }
+      totalCalls += day.totalCalls;
+      totalTokens += day.totalTokens;
+      series.push({
+        date,
+        totalCalls: day.totalCalls,
+        totalTokens: day.totalTokens,
+        byKind: day.byKind,
+      });
+    }
+  } catch (err) {
+    logger.warn({ err, userId }, 'getUserAiUsageSummary failed');
+  }
+
+  return { series, totals: { calls: totalCalls, tokens: totalTokens }, byKind };
 }

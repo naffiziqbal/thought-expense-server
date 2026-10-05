@@ -44,7 +44,7 @@ export interface SearchResult {
  * Turn a free-text question ("food last month over 500") into structured
  * filters. Falls back to a pure semantic query if parsing fails.
  */
-async function parseSearchQuery(query: string): Promise<ParsedSearchQuery> {
+async function parseSearchQuery(query: string, userId: string): Promise<ParsedSearchQuery> {
   try {
     const prompt = `Parse this expense-history search query into filters.
 Today is ${new Date().toISOString().split('T')[0]}.
@@ -61,7 +61,7 @@ core thing being searched for, stripped of dates/amount qualifiers):
   "minAmount": 100,
   "maxAmount": 500
 }`;
-    const raw = await runParsingModel(prompt, 'search');
+    const raw = await runParsingModel(prompt, 'search', userId);
     const parsed = extractJson(raw);
     return {
       semanticQuery: String(parsed.semanticQuery || query).trim() || query,
@@ -84,7 +84,7 @@ export async function searchExpenses(
   isPremium: boolean,
   limit: number = 30
 ): Promise<SearchResult> {
-  const parsed = await parseSearchQuery(query);
+  const parsed = await parseSearchQuery(query, userId);
 
   // Free tier: history capped at 3 months, matching the rest of the API
   const dateFilter: { gte?: Date; lte?: Date } = {};
@@ -109,7 +109,7 @@ export async function searchExpenses(
   let semanticIds: string[] = [];
   if (isPineconeReady()) {
     try {
-      const embedding = await generateEmbedding(parsed.semanticQuery);
+      const embedding = await generateEmbedding(parsed.semanticQuery, userId);
       const matches = await querySimilarExpenses(embedding, userId, 30);
       semanticIds = matches
         .filter((m) => (m.score ?? 0) >= 0.5)
