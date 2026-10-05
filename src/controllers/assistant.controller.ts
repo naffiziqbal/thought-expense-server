@@ -89,58 +89,63 @@ export const ask = asyncHandler(async (req: AuthRequest, res: Response, next: Ne
 // @desc    "Why did I spend so much this month?"
 // @route   POST /api/assistant/why
 // @access  Private (free tier: limited per month)
-export const whySpendingChanged = asyncHandler(async (req: AuthRequest, res: Response, next: NextFunction) => {
-  const userId = req.user!.id;
+export const whySpendingChanged = asyncHandler(
+  async (req: AuthRequest, res: Response, next: NextFunction) => {
+    const userId = req.user!.id;
 
-  const remaining = await consumeQuota(userId, req.user!.isPremium);
-  if (remaining === -1) return next(quotaError);
+    const remaining = await consumeQuota(userId, req.user!.isPremium);
+    if (remaining === -1) return next(quotaError);
 
-  const ctx = await buildAdvisorContext(userId, req.user!.currency || 'USD', req.user!.isPremium);
-  if (ctx.currentMonth.transactionCount === 0) {
+    const ctx = await buildAdvisorContext(userId, req.user!.currency || 'USD', req.user!.isPremium);
+    if (ctx.currentMonth.transactionCount === 0) {
+      res.json({
+        success: true,
+        data: {
+          answer:
+            'No expenses recorded this month yet — add some and I can break down what is driving your spending.',
+          followUps: [],
+          remainingFreeQuestions: remaining,
+        },
+      });
+      return;
+    }
+
+    const answer = await explainSpendingChange(ctx);
     res.json({
       success: true,
-      data: {
-        answer: 'No expenses recorded this month yet — add some and I can break down what is driving your spending.',
-        followUps: [],
-        remainingFreeQuestions: remaining,
-      },
+      data: { ...answer, remainingFreeQuestions: remaining },
     });
-    return;
   }
-
-  const answer = await explainSpendingChange(ctx);
-  res.json({
-    success: true,
-    data: { ...answer, remainingFreeQuestions: remaining },
-  });
-});
+);
 
 // @desc    "How can I save X next month?" — a realistic plan
 // @route   POST /api/assistant/savings-plan
 // @access  Private (free tier: limited per month)
-export const savingsPlan = asyncHandler(async (req: AuthRequest, res: Response, next: NextFunction) => {
-  const userId = req.user!.id;
-  const targetAmount = Number(req.body?.targetAmount);
+export const savingsPlan = asyncHandler(
+  async (req: AuthRequest, res: Response, next: NextFunction) => {
+    const userId = req.user!.id;
+    const targetAmount = Number(req.body?.targetAmount);
 
-  if (!targetAmount || !isFinite(targetAmount) || targetAmount <= 0) {
-    return next(new AppError('A positive targetAmount is required', 400));
+    if (!targetAmount || !isFinite(targetAmount) || targetAmount <= 0) {
+      return next(new AppError('A positive targetAmount is required', 400));
+    }
+
+    const remaining = await consumeQuota(userId, req.user!.isPremium);
+    if (remaining === -1) return next(quotaError);
+
+    const ctx = await buildAdvisorContext(userId, req.user!.currency || 'USD', req.user!.isPremium);
+    const plan = await generateSavingsPlan(ctx, targetAmount);
+
+    res.json({
+      success: true,
+      data: { plan, remainingFreeQuestions: remaining },
+    });
   }
+);
 
-  const remaining = await consumeQuota(userId, req.user!.isPremium);
-  if (remaining === -1) return next(quotaError);
-
-  const ctx = await buildAdvisorContext(userId, req.user!.currency || 'USD', req.user!.isPremium);
-  const plan = await generateSavingsPlan(ctx, targetAmount);
-
-  res.json({
-    success: true,
-    data: { plan, remainingFreeQuestions: remaining },
-  });
-});
-
-// @desc    Natural-language search over expense history
+// @desc    Plain-text search over expense history (description, category, raw input)
 // @route   GET /api/assistant/search?q=
-// @access  Private (free tier searches its 3-month window)
+// @access  Private (free tier: last 3 months)
 export const search = asyncHandler(async (req: AuthRequest, res: Response, next: NextFunction) => {
   const userId = req.user!.id;
   const q = req.query.q;

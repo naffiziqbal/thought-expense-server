@@ -1,6 +1,11 @@
 import express, { Router } from 'express';
 import { body } from 'express-validator';
-import { forgotPasswordLimiter, loginLimiter, otpVerifyLimiter, signupLimiter } from '../middleware/rateLimit';
+import {
+  forgotPasswordLimiter,
+  loginLimiter,
+  otpVerifyLimiter,
+  signupLimiter,
+} from '../middleware/rateLimit';
 import {
   signup,
   login,
@@ -16,6 +21,16 @@ import {
 } from '../controllers/auth.controller';
 import { protect } from '../middleware/auth.middleware';
 import { validate } from '../middleware/validation.middleware';
+import { normalizeIso4217Code } from '../utils/iso4217';
+
+const optionalIso4217Currency = body('currency')
+  .optional({ values: 'null' })
+  .custom((value) => {
+    if (value === undefined || value === null || value === '') return true;
+    if (typeof value !== 'string') throw new Error('Currency must be a string');
+    if (!normalizeIso4217Code(value)) throw new Error('Currency must be a valid ISO 4217 code');
+    return true;
+  });
 
 const router: Router = express.Router();
 
@@ -23,18 +38,26 @@ const router: Router = express.Router();
 const signupValidation = [
   body('email').isEmail().normalizeEmail().withMessage('Please provide a valid email'),
   body('password').isLength({ min: 6 }).withMessage('Password must be at least 6 characters'),
-  body('name').optional().trim().isLength({ min: 2 }).withMessage('Name must be at least 2 characters'),
-  body('currency').optional().isLength({ min: 3, max: 3 }).withMessage('Currency must be a 3-letter code')
+  body('name')
+    .optional()
+    .trim()
+    .isLength({ min: 2 })
+    .withMessage('Name must be at least 2 characters'),
+  optionalIso4217Currency,
 ];
 
 const loginValidation = [
   body('email').isEmail().normalizeEmail().withMessage('Please provide a valid email'),
-  body('password').notEmpty().withMessage('Password is required')
+  body('password').notEmpty().withMessage('Password is required'),
 ];
 
 const updateProfileValidation = [
-  body('name').optional().trim().isLength({ min: 1, max: 100 }).withMessage('Name must be 1-100 characters'),
-  body('currency').optional().isLength({ min: 3, max: 3 }).withMessage('Currency must be a 3-letter code'),
+  body('name')
+    .optional()
+    .trim()
+    .isLength({ min: 1, max: 100 })
+    .withMessage('Name must be 1-100 characters'),
+  optionalIso4217Currency,
 ];
 
 const forgotPasswordValidation = [
@@ -51,13 +74,13 @@ const verifyOtpValidation = [
   body('otp').isLength({ min: 6, max: 6 }).isNumeric().withMessage('Code must be 6 digits'),
 ];
 
-const deleteAccountValidation = [
-  body('password').notEmpty().withMessage('Password is required'),
-];
+const deleteAccountValidation = [body('password').notEmpty().withMessage('Password is required')];
 
 const changePasswordValidation = [
   body('currentPassword').notEmpty().withMessage('Current password is required'),
-  body('newPassword').isLength({ min: 6 }).withMessage('New password must be at least 6 characters'),
+  body('newPassword')
+    .isLength({ min: 6 })
+    .withMessage('New password must be at least 6 characters'),
 ];
 
 // Routes
@@ -66,7 +89,13 @@ router.post('/login', loginLimiter, loginValidation, validate, login);
 router.get('/me', protect, getMe);
 router.patch('/profile', protect, updateProfileValidation, validate, updateProfile);
 router.post('/profile/picture', protect, avatarUpload.single('image'), uploadProfilePicture);
-router.post('/forgot-password', forgotPasswordLimiter, forgotPasswordValidation, validate, forgotPassword);
+router.post(
+  '/forgot-password',
+  forgotPasswordLimiter,
+  forgotPasswordValidation,
+  validate,
+  forgotPassword
+);
 router.post('/verify-otp', otpVerifyLimiter, verifyOtpValidation, validate, verifyResetOtp);
 router.post('/reset-password', resetPasswordValidation, validate, resetPassword);
 router.post('/change-password', protect, changePasswordValidation, validate, changePassword);

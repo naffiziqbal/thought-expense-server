@@ -4,16 +4,22 @@ import {
   parseAndCreateExpenses,
   enqueueParseAndCreateExpenses,
   getExpenseParseJobStatus,
+  cancelExpenseParseJob,
   createExpense,
   createExpensesBatch,
   getExpenses,
   getExpenseById,
   updateExpense,
   deleteExpense,
+  deleteExpensesBatch,
   getCategorySummary,
   getSimilarExpenses,
   suggestCategoryForDescription,
   exportExpenses,
+  previewExpenseImport,
+  applyExpenseImport,
+  enqueueImportDocument,
+  expenseImportUpload,
   ocrReceipt,
   receiptUpload,
   getRecurringExpenses,
@@ -84,8 +90,21 @@ router.get(
   validate,
   getExpenseParseJobStatus
 );
+router.post(
+  '/parse/jobs/:jobId/cancel',
+  param('jobId').isString().notEmpty(),
+  validate,
+  cancelExpenseParseJob
+);
 router.post('/', createExpenseValidation, validate, createExpense);
 router.post('/batch', body('expenses').isArray({ min: 1, max: 50 }), validate, createExpensesBatch);
+router.post(
+  '/batch/delete',
+  body('ids').isArray({ min: 1, max: 100 }),
+  body('ids.*').isUUID(),
+  validate,
+  deleteExpensesBatch
+);
 router.get('/', queryExpensesValidation, validate, getExpenses);
 router.get('/summary', getCategorySummary);
 router.get('/recurring', getRecurringExpenses);
@@ -102,6 +121,19 @@ router.get(
   query('to').optional().isISO8601(),
   validate,
   exportExpenses
+);
+router.post(
+  '/import/async',
+  aiRateLimit,
+  expenseImportUpload.single('file'),
+  enqueueImportDocument
+);
+router.post('/import/preview', expenseImportUpload.single('file'), previewExpenseImport);
+router.post(
+  '/import',
+  body('expenses').isArray({ min: 1, max: 500 }),
+  validate,
+  applyExpenseImport
 );
 router.get('/:id', param('id').isUUID(), validate, getExpenseById);
 router.get('/:id/similar', param('id').isUUID(), validate, getSimilarExpenses);

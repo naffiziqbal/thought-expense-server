@@ -693,3 +693,41 @@ OUTPUT RULES:
   if (!cleaned || /^NONE$/i.test(cleaned)) return '';
   return cleaned;
 };
+
+/** OCR for PDF/image imports (statements, exports, scans). Returns plain text for parseExpenses. */
+export const extractImportDocumentText = async (
+  fileBase64: string,
+  mimeType: string,
+  userId?: string
+): Promise<string> => {
+  const prompt = `You are reading a financial document: PDF export, bank statement, receipt bundle, or expense list photo.
+
+Extract EVERY individual expense / transaction you can see.
+
+OUTPUT RULES:
+- PLAIN TEXT ONLY — one transaction per line
+- Prefer: "<YYYY-MM-DD or date as shown> <description> <amount>" when a date is visible
+- Otherwise: "<description> <amount>" per line
+- Amounts: numbers only (no currency symbols). Use positive numbers for money spent.
+- Include purchases, fees, transfers out, subscriptions — skip running balances, account numbers, page headers, and duplicate grand totals
+- If the document is a table, emit one line per row
+- If nothing is readable, output exactly: NONE`;
+
+  const modelsToTry = [
+    PARSING_MODEL,
+    ...PARSING_FALLBACK_MODELS.filter((m) => m !== PARSING_MODEL),
+  ];
+
+  const text = await generateWithRetryAndFallback(modelsToTry, async (model) => {
+    const result = await model.generateContent([
+      { inlineData: { data: fileBase64, mimeType } },
+      prompt,
+    ]);
+    recordGeminiSuccess('ocr', userId, result.response.usageMetadata);
+    return result.response.text();
+  });
+
+  const cleaned = (text || '').trim();
+  if (!cleaned || /^NONE$/i.test(cleaned)) return '';
+  return cleaned;
+};

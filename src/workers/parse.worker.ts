@@ -14,7 +14,11 @@ import {
   LocalPreviewExpense,
 } from '../queues/expenseParse.queue';
 import { queueConnection } from '../queues/queue.connection';
-import { parseCategoryBudgets, parseExpenses } from '../services/gemini.service';
+import {
+  extractImportDocumentText,
+  parseCategoryBudgets,
+  parseExpenses,
+} from '../services/gemini.service';
 import {
   persistParsedExpenses,
   applySelectedExpenseDate,
@@ -23,6 +27,7 @@ import {
 import { getUserContext, updateCategoryMapping } from '../services/rag.service';
 import { withIdempotency } from '../services/idempotency.service';
 import { logger } from '../config/logger';
+import { notifyDocumentImportComplete } from '../services/importPush.service';
 import * as Sentry from '@sentry/node';
 
 let expenseWorker: Worker<ExpenseParseJobData, ExpenseParseJobResult> | null = null;
@@ -46,6 +51,16 @@ function previewToParsed(preview: LocalPreviewExpense[], userCurrency: string, r
 function isLastAttempt(job: Job): boolean {
   const max = job.opts.attempts ?? 1;
   return job.attemptsMade + 1 >= max;
+}
+
+const IMPORT_CANCELLED = 'Import cancelled by user';
+
+async function throwIfImportCancelled(job: Job<ExpenseParseJobData>): Promise<void> {
+  if (!job.data.importFileName) return;
+  const fresh = await expenseParseQueue.getJob(job.id!);
+  if (fresh?.data.cancelled) {
+    throw new Error(IMPORT_CANCELLED);
+  }
 }
 
 async function persistCreated(
@@ -80,14 +95,55 @@ async function persistCreated(
   });
 }
 
+async function finishDocumentImport(
+  job: Job<ExpenseParseJobData>,
+  userId: string,
+  result: ExpenseParseJobResult
+): Promise<ExpenseParseJobResult> {
+  if (job.data.importFileName) {
+    await job.updateProgress(100).catch(() => undefined);
+    notifyDocumentImportComplete(userId, {
+      fileName: job.data.importFileName,
+      importedCount: result.expenses?.length ?? 0,
+    });
+  }
+  return result;
+}
+
 export const startParseWorkers = () => {
   if (!expenseWorker) {
     expenseWorker = new Worker<ExpenseParseJobData, ExpenseParseJobResult>(
       EXPENSE_PARSE_QUEUE,
       async (job: Job<ExpenseParseJobData>) => {
-        const { userId, rawInput, create, userCurrency, localPreview, date } = job.data;
+        const { userId, create, userCurrency, localPreview, date, documentBase64, documentMime } =
+          job.data;
+        let rawInput = job.data.rawInput;
+        const isDocumentImport = !!(documentBase64 && documentMime);
         const jobKey = String(job.id);
         const selectedDate = date || resolveSelectedExpenseDate({ date, localPreview });
+
+        if (isDocumentImport) {
+          await job.updateProgress(5).catch(() => undefined);
+        }
+
+        await throwIfImportCancelled(job);
+
+        if (isDocumentImport) {
+          await job.updateProgress(8);
+          const extracted = await extractImportDocumentText(documentBase64, documentMime, userId);
+          await throwIfImportCancelled(job);
+          await job.updateProgress(38);
+          if (!extracted.trim()) {
+            throw new Error('Could not read any expenses from this document');
+          }
+          rawInput = extracted;
+          await job.updateData({
+            ...job.data,
+            rawInput: extracted,
+            documentBase64: undefined,
+          });
+        }
+
         const fallback = applySelectedExpenseDate(
           previewToParsed(localPreview || [], userCurrency, rawInput),
           selectedDate
@@ -95,6 +151,8 @@ export const startParseWorkers = () => {
 
         let parsedExpenses;
         try {
+          await throwIfImportCancelled(job);
+          await job.updateProgress(isDocumentImport ? 48 : 20);
           const userContext = await getUserContext(userId);
           parsedExpenses = applySelectedExpenseDate(
             await parseExpenses(
@@ -107,20 +165,39 @@ export const startParseWorkers = () => {
             ),
             selectedDate
           );
+          await job.updateProgress(72);
+          await throwIfImportCancelled(job);
         } catch (err) {
+          if (err instanceof Error && err.message === IMPORT_CANCELLED) {
+            throw err;
+          }
           if (isLastAttempt(job) && create && fallback.length > 0) {
             logger.warn(
               { jobId: job.id, err },
               'Parse exhausted retries; persisting local preview'
             );
-            return persistCreated(userId, fallback, rawInput, userCurrency, jobKey);
+            const fallbackResult = await persistCreated(
+              userId,
+              fallback,
+              rawInput,
+              userCurrency,
+              jobKey
+            );
+            return finishDocumentImport(job, userId, fallbackResult);
           }
           throw err;
         }
 
         if (!parsedExpenses || parsedExpenses.length === 0) {
           if (create && fallback.length > 0) {
-            return persistCreated(userId, fallback, rawInput, userCurrency, jobKey);
+            const fallbackResult = await persistCreated(
+              userId,
+              fallback,
+              rawInput,
+              userCurrency,
+              jobKey
+            );
+            return finishDocumentImport(job, userId, fallbackResult);
           }
           throw new Error('Could not parse any expenses from input');
         }
@@ -133,9 +210,18 @@ export const startParseWorkers = () => {
           };
         }
 
-        return persistCreated(userId, parsedExpenses, rawInput, userCurrency, jobKey);
+        await throwIfImportCancelled(job);
+        await job.updateProgress(88);
+        const result = await persistCreated(userId, parsedExpenses, rawInput, userCurrency, jobKey);
+        return finishDocumentImport(job, userId, result);
       },
-      { connection: queueConnection }
+      {
+        connection: queueConnection,
+        // OCR + parse can run several minutes; default 30s lock causes false "stalled" → back to waiting (looks stuck on Queued).
+        lockDuration: 10 * 60 * 1000,
+        stalledInterval: 60 * 1000,
+        maxStalledCount: 2,
+      }
     );
   }
 

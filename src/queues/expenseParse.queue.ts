@@ -21,6 +21,11 @@ export interface ExpenseParseJobData {
   date?: string;
   localPreview?: LocalPreviewExpense[];
   clientBatchId?: string;
+  /** Premium document import: OCR in worker, then AI parse. */
+  documentBase64?: string;
+  documentMime?: string;
+  importFileName?: string;
+  cancelled?: boolean;
 }
 
 export interface ExpenseParseJobResult {
@@ -50,4 +55,3 @@ export const expenseParseQueue = new Queue<ExpenseParseJobData, ExpenseParseJobR
     },
   }
 );
-

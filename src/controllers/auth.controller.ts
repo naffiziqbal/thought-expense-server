@@ -15,6 +15,7 @@ import { uploadToSpace, deleteFromSpace } from '../utils/storage';
 import { authUserSelect, formatAuthUser } from '../utils/authUser.util';
 import { refreshStalePremium } from '../utils/subscription.util';
 import { moderationBlockMessage, moderationStatus } from '../utils/userModeration.util';
+import { normalizeIso4217Code } from '../utils/iso4217';
 
 // Generate JWT token
 const generateToken = (userId: string, tokenVersion = 0): string => {
@@ -66,13 +67,22 @@ export const signup = asyncHandler(async (req: AuthRequest, res: Response, next:
   const salt = await bcrypt.genSalt(12);
   const hashedPassword = await bcrypt.hash(password, salt);
 
+  let userCurrency = 'USD';
+  if (currency !== undefined && currency !== null && currency !== '') {
+    const normalized = normalizeIso4217Code(String(currency));
+    if (!normalized) {
+      return next(new AppError('Invalid currency code', 400));
+    }
+    userCurrency = normalized;
+  }
+
   // Create user
   const user = await prisma.user.create({
     data: {
       email,
       password: hashedPassword,
       name: name || null,
-      currency: currency || 'USD',
+      currency: userCurrency,
     },
     select: authUserSelect,
   });
@@ -204,8 +214,15 @@ export const updateProfile = asyncHandler(
     if (name !== undefined) {
       updateData.name = (typeof name === 'string' && name.trim()) || null;
     }
-    if (currency !== undefined && typeof currency === 'string' && currency.length === 3) {
-      updateData.currency = currency.toUpperCase();
+    if (currency !== undefined) {
+      if (typeof currency !== 'string') {
+        throw new AppError('Invalid currency code', 400);
+      }
+      const normalized = normalizeIso4217Code(currency);
+      if (!normalized) {
+        throw new AppError('Invalid currency code', 400);
+      }
+      updateData.currency = normalized;
     }
 
     const user = await prisma.user.update({

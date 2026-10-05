@@ -1,7 +1,7 @@
 /**
  * Weekly Financial Briefing — the retention loop.
  * Generated on a schedule (see workers/briefing.worker.ts), stored as an
- * Insight of type 'briefing', and delivered by email via Resend.
+ * Insight of type 'briefing'. Email delivery (Resend) is Premium only.
  */
 
 import prisma from '../config/prisma';
@@ -64,6 +64,8 @@ export async function generateWeeklyBriefingForUser(
   });
   if (!user) return { generated: false, reason: 'User not found' };
 
+  const shouldSendEmail = options.sendEmail !== false && user.isPremium;
+
   const currency = user.currency || 'USD';
   const now = new Date();
   const weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
@@ -87,7 +89,7 @@ export async function generateWeeklyBriefingForUser(
   if (existing) {
     const meta = (existing.metadata || {}) as Record<string, unknown>;
     let emailed = Boolean(meta.emailed);
-    if (options.sendEmail !== false && !emailed) {
+    if (shouldSendEmail && !emailed) {
       const stored = meta.briefing as BriefingContent | undefined;
       if (stored) {
         const result = await sendWeeklyBriefingEmail(user.email, {
@@ -96,7 +98,7 @@ export async function generateWeeklyBriefingForUser(
           weekTotal: thisWeek.total,
           previousWeekTotal: lastWeek.total,
           currency,
-          isPremium: user.isPremium,
+          isPremium: true,
         });
         emailed = result.success;
         if (emailed) {
@@ -146,14 +148,14 @@ export async function generateWeeklyBriefingForUser(
   await deleteCachePattern(`insights:${userId}:*`);
 
   let emailed = false;
-  if (options.sendEmail !== false) {
+  if (shouldSendEmail) {
     const result = await sendWeeklyBriefingEmail(user.email, {
       name: user.name,
       briefing,
       weekTotal: thisWeek.total,
       previousWeekTotal: lastWeek.total,
       currency,
-      isPremium: user.isPremium,
+      isPremium: true,
     });
     emailed = result.success;
     if (emailed) {

@@ -4,6 +4,7 @@ import prisma from '../config/prisma';
 import { asyncHandler } from '../middleware/error.middleware';
 import { AppError } from '../middleware/error.middleware';
 import { parseExpenses, suggestCategory, extractReceiptText } from '../services/gemini.service';
+import { importJobPhase, importJobUserMessage } from '../utils/importJobMessages';
 import {
   getUserContext,
   storeExpenseEmbedding,
@@ -24,6 +25,12 @@ import { detectRecurring } from '../services/recurring.service';
 import { checkBudgetAndNotify } from '../services/budgetAlert.service';
 import { logger } from '../config/logger';
 import { idempotencyKeyFromRequest, withIdempotency } from '../services/idempotency.service';
+import {
+  EXPENSE_IMPORT_MAX_BYTES,
+  EXPENSE_IMPORT_MAX_ROWS,
+  parseExpenseImportFile,
+  type ExpenseImportRow,
+} from '../services/expenseImport.service';
 
 // @desc    Parse raw text (optionally create)
 // @route   POST /api/expenses/parse
@@ -163,24 +170,75 @@ export const getExpenseParseJobStatus = asyncHandler(
     }
 
     const state = await job.getState();
+    const importFileName = job.data.importFileName;
+    const isImport = !!(job.data.importFileName || job.data.documentMime);
+    const cancelled =
+      !!job.data.cancelled ||
+      (state === 'failed' &&
+        typeof job.failedReason === 'string' &&
+        job.failedReason.toLowerCase().includes('cancelled'));
+
+    if (cancelled && isImport) {
+      return res.json({
+        success: true,
+        data: {
+          jobId,
+          status: 'cancelled',
+          progress: 0,
+          phase: 'cancelled' as const,
+          message: importJobUserMessage({ progress: 0, status: 'cancelled', importFileName }),
+          importFileName,
+        },
+      });
+    }
+
     if (state === 'completed') {
+      const result = job.returnvalue as { expenses?: unknown[] } | undefined;
+      const importedCount = result?.expenses?.length ?? 0;
       return res.json({
         success: true,
         data: {
           jobId,
           status: 'completed',
+          progress: 100,
           result: job.returnvalue,
+          ...(isImport
+            ? {
+                phase: 'done' as const,
+                message: importJobUserMessage({
+                  progress: 100,
+                  status: 'completed',
+                  importFileName,
+                  importedCount,
+                }),
+                importFileName,
+                importedCount,
+              }
+            : {}),
         },
       });
     }
 
     if (state === 'failed') {
+      const errText = job.failedReason || 'Failed to parse expenses';
       return res.json({
         success: true,
         data: {
           jobId,
           status: 'failed',
-          error: job.failedReason || 'Failed to parse expenses',
+          error: errText,
+          ...(isImport
+            ? {
+                phase: 'failed' as const,
+                message: importJobUserMessage({
+                  progress: 0,
+                  status: 'failed',
+                  importFileName,
+                  error: errText,
+                }),
+                importFileName,
+              }
+            : {}),
         },
       });
     }
@@ -192,7 +250,63 @@ export const getExpenseParseJobStatus = asyncHandler(
         jobId,
         status: state,
         progress,
+        ...(isImport
+          ? {
+              phase: importJobPhase(progress, state),
+              message: importJobUserMessage({
+                progress,
+                status: state,
+                importFileName,
+              }),
+              importFileName,
+            }
+          : {}),
       },
+    });
+  }
+);
+
+// @desc    Cancel an in-flight document import job
+// @route   POST /api/expenses/parse/jobs/:jobId/cancel
+// @access  Private (Premium document import)
+export const cancelExpenseParseJob = asyncHandler(
+  async (req: AuthRequest, res: Response, next: NextFunction) => {
+    const { jobId } = req.params;
+    const userId = req.user!.id;
+    const job = await expenseParseQueue.getJob(jobId);
+
+    if (!job) {
+      return next(new AppError('Job not found', 404));
+    }
+    if (job.data.userId !== userId) {
+      return next(new AppError('Not authorized to access this job', 403));
+    }
+    if (!job.data.importFileName) {
+      return next(new AppError('Only document imports can be cancelled here', 400));
+    }
+
+    const state = await job.getState();
+    if (state === 'completed' || state === 'failed') {
+      return next(new AppError('This import has already finished', 400));
+    }
+    if (job.data.cancelled) {
+      return res.json({
+        success: true,
+        message: 'Import cancelled',
+        data: { jobId, status: 'cancelled' as const },
+      });
+    }
+
+    await job.updateData({ ...job.data, cancelled: true });
+
+    if (state === 'waiting' || state === 'delayed' || state === 'prioritized') {
+      await job.remove().catch(() => undefined);
+    }
+
+    res.json({
+      success: true,
+      message: 'Import cancelled',
+      data: { jobId, status: 'cancelled' as const },
     });
   }
 );
@@ -523,6 +637,53 @@ export const updateExpense = asyncHandler(
   }
 );
 
+// @desc    Delete many expenses (same user)
+// @route   POST /api/expenses/batch/delete
+// @access  Private
+export const deleteExpensesBatch = asyncHandler(
+  async (req: AuthRequest, res: Response, next: NextFunction) => {
+    const userId = req.user!.id;
+    const ids = req.body.ids as string[] | undefined;
+
+    if (!Array.isArray(ids) || ids.length === 0) {
+      return next(new AppError('ids must be a non-empty array', 400));
+    }
+    if (ids.length > 100) {
+      return next(new AppError('Cannot delete more than 100 expenses at once', 400));
+    }
+
+    const uniqueIds = [...new Set(ids)];
+    const owned = await prisma.expense.findMany({
+      where: { userId, id: { in: uniqueIds } },
+      select: { id: true },
+    });
+    const ownedIds = owned.map((e) => e.id);
+
+    if (ownedIds.length === 0) {
+      return next(new AppError('No matching expenses found', 404));
+    }
+
+    await prisma.expense.deleteMany({
+      where: { userId, id: { in: ownedIds } },
+    });
+
+    for (const id of ownedIds) {
+      deleteExpenseEmbedding(id).catch((err) => {
+        logger.error({ err, expenseId: id }, 'Failed to delete embedding');
+      });
+    }
+
+    await deleteCachePattern(`expenses:${userId}:*`);
+    await deleteCachePattern(`summary:${userId}:*`);
+
+    res.json({
+      success: true,
+      message: `Deleted ${ownedIds.length} expense${ownedIds.length === 1 ? '' : 's'}`,
+      data: { deleted: ownedIds.length, ids: ownedIds },
+    });
+  }
+);
+
 // @desc    Delete expense
 // @route   DELETE /api/expenses/:id
 // @access  Private
@@ -707,6 +868,204 @@ export const getSimilarExpenses = asyncHandler(
   }
 );
 
+async function persistExpenseRows(
+  userId: string,
+  userCurrency: string,
+  rows: ExpenseImportRow[]
+): Promise<{ count: number }> {
+  const CHUNK = 50;
+  let count = 0;
+  for (let i = 0; i < rows.length; i += CHUNK) {
+    const chunk = rows.slice(i, i + CHUNK);
+    const created = await prisma.$transaction(
+      chunk.map((e) =>
+        prisma.expense.create({
+          data: {
+            userId,
+            description: e.description.trim(),
+            amount: e.amount,
+            currency: (e.currency || userCurrency || 'USD').toUpperCase(),
+            category: (e.category || 'Other').trim(),
+            confidence: 1.0,
+            rawInput: `import:${e.description} ${e.amount}`,
+            date: new Date(`${e.date}T12:00:00.000Z`),
+          },
+        })
+      )
+    );
+    count += created.length;
+    (async () => {
+      for (const expense of created) {
+        await storeExpenseEmbedding(expense).catch((err) => {
+          logger.error({ err, expenseId: expense.id }, 'Failed to store embedding');
+        });
+      }
+    })();
+  }
+
+  await deleteCachePattern(`expenses:${userId}:*`);
+  await deleteCachePattern(`summary:${userId}:*`);
+  void checkBudgetAndNotify(userId);
+
+  return { count };
+}
+
+const DOCUMENT_IMPORT_MAX_BYTES = 4 * 1024 * 1024;
+
+function isCsvImportFile(mimeType: string, filename: string): boolean {
+  const lower = filename.toLowerCase();
+  return (
+    lower.endsWith('.csv') ||
+    mimeType.includes('csv') ||
+    (mimeType.includes('text/plain') && lower.endsWith('.csv'))
+  );
+}
+
+// @desc    Enqueue PDF/image import: OCR → AI parse → create expenses (Premium)
+// @route   POST /api/expenses/import/async
+// @access  Private (Premium)
+export const enqueueImportDocument = asyncHandler(
+  async (req: AuthRequest, res: Response, next: NextFunction) => {
+    if (!req.user!.isPremium) {
+      return next(new AppError('Import is available for Premium users only', 403));
+    }
+
+    const file = req.file;
+    if (!file) {
+      return next(new AppError('No file provided', 400));
+    }
+    if (file.size > DOCUMENT_IMPORT_MAX_BYTES) {
+      return next(new AppError('File is too large (max 4MB)', 400));
+    }
+    if (isCsvImportFile(file.mimetype, file.originalname)) {
+      return next(
+        new AppError('For CSV files use import preview, or upload a PDF or image scan', 400)
+      );
+    }
+
+    const userId = req.user!.id;
+    const batchId = `import-${userId}-${Date.now()}`;
+    const jobId = `parse-${userId}-${batchId}`.slice(0, 120);
+
+    let job;
+    try {
+      job = await expenseParseQueue.add(
+        'import-document',
+        {
+          userId,
+          rawInput: '',
+          create: true,
+          userCurrency: req.user!.currency || 'USD',
+          clientBatchId: batchId,
+          documentBase64: file.buffer.toString('base64'),
+          documentMime: file.mimetype || 'application/octet-stream',
+          importFileName: file.originalname,
+        },
+        { jobId, priority: 10 }
+      );
+    } catch (err) {
+      job = await expenseParseQueue.getJob(jobId);
+      if (!job) throw err;
+    }
+
+    res.status(202).json({
+      success: true,
+      message: 'Import started',
+      data: {
+        jobId: job.id,
+        message: importJobUserMessage({
+          progress: 0,
+          status: 'waiting',
+          importFileName: file.originalname,
+        }),
+      },
+    });
+  }
+);
+
+// @desc    Preview expenses from CSV upload (Premium only)
+// @route   POST /api/expenses/import/preview
+// @access  Private (Premium)
+export const previewExpenseImport = asyncHandler(
+  async (req: AuthRequest, res: Response, next: NextFunction) => {
+    if (!req.user!.isPremium) {
+      return next(new AppError('Import is available for Premium users only', 403));
+    }
+
+    const file = req.file;
+    if (!file) {
+      return next(new AppError('No file provided', 400));
+    }
+
+    if (!isCsvImportFile(file.mimetype, file.originalname)) {
+      return next(
+        new AppError('Preview is for CSV only. Upload PDF or images via async import.', 400)
+      );
+    }
+
+    try {
+      const preview = await parseExpenseImportFile(
+        file.buffer,
+        file.mimetype,
+        file.originalname,
+        req.user!.currency || 'USD'
+      );
+      res.json({ success: true, data: preview });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Could not parse file';
+      return next(new AppError(message, 422));
+    }
+  }
+);
+
+// @desc    Import confirmed expense rows (Premium only)
+// @route   POST /api/expenses/import
+// @access  Private (Premium)
+export const applyExpenseImport = asyncHandler(
+  async (req: AuthRequest, res: Response, next: NextFunction) => {
+    const userId = req.user!.id;
+
+    if (!req.user!.isPremium) {
+      return next(new AppError('Import is available for Premium users only', 403));
+    }
+
+    const { expenses } = req.body as { expenses?: ExpenseImportRow[] };
+    if (!Array.isArray(expenses) || expenses.length === 0) {
+      return next(new AppError('expenses must be a non-empty array', 400));
+    }
+    if (expenses.length > EXPENSE_IMPORT_MAX_ROWS) {
+      return next(
+        new AppError(`Cannot import more than ${EXPENSE_IMPORT_MAX_ROWS} expenses at once`, 400)
+      );
+    }
+
+    for (const e of expenses) {
+      if (!e.description?.trim() || e.amount == null || !Number.isFinite(Number(e.amount))) {
+        return next(new AppError('Each expense needs a description and a numeric amount', 400));
+      }
+      if (Number(e.amount) <= 0) {
+        return next(new AppError('Amount must be positive', 400));
+      }
+    }
+
+    const normalized: ExpenseImportRow[] = expenses.map((e) => ({
+      description: String(e.description).trim(),
+      amount: Math.round(parseFloat(String(e.amount)) * 100) / 100,
+      currency: (e.currency || req.user!.currency || 'USD').toUpperCase(),
+      category: (e.category || 'Other').trim(),
+      date: (e.date || new Date().toISOString().slice(0, 10)).slice(0, 10),
+    }));
+
+    const { count } = await persistExpenseRows(userId, req.user!.currency || 'USD', normalized);
+
+    res.status(201).json({
+      success: true,
+      message: `Imported ${count} expense(s)`,
+      data: { imported: count },
+    });
+  }
+);
+
 // @desc    Export expenses as CSV or PDF (Premium only)
 // @route   GET /api/expenses/export
 // @access  Private (Premium)
@@ -805,6 +1164,25 @@ export const suggestCategoryForDescription = asyncHandler(
 );
 
 // Multer config for receipt upload (memory storage) - exported for routes
+export const expenseImportUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: EXPENSE_IMPORT_MAX_BYTES },
+  fileFilter: (_req, file, cb) => {
+    const name = file.originalname.toLowerCase();
+    const ok =
+      file.mimetype.includes('csv') ||
+      file.mimetype.includes('pdf') ||
+      file.mimetype.includes('text/plain') ||
+      file.mimetype.includes('spreadsheet') ||
+      file.mimetype.includes('image/') ||
+      name.endsWith('.csv') ||
+      name.endsWith('.pdf') ||
+      /\.(jpe?g|png|webp|heic|heif)$/i.test(name);
+    if (ok) cb(null, true);
+    else cb(new Error('Upload CSV, PDF, or an image scan'));
+  },
+});
+
 export const receiptUpload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 10 * 1024 * 1024 }, // 10MB
