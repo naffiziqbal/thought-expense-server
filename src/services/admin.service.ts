@@ -298,7 +298,7 @@ export async function getUserDetail(userId: string) {
     subscriptionProductId: billing.subscriptionProductId,
   });
 
-  const [billingEvents, recentExpenses, lastExpense, revenueCat] = await Promise.all([
+  const [billingEvents, lastExpense, revenueCat] = await Promise.all([
     prisma.billingWebhookEvent.findMany({
       where: { userId },
       orderBy: { createdAt: 'desc' },
@@ -311,19 +311,6 @@ export async function getUserDetail(userId: string) {
         store: true,
         outcome: true,
         createdAt: true,
-      },
-    }),
-    prisma.expense.findMany({
-      where: { userId },
-      orderBy: { date: 'desc' },
-      take: 12,
-      select: {
-        id: true,
-        description: true,
-        amount: true,
-        currency: true,
-        category: true,
-        date: true,
       },
     }),
     prisma.expense.findFirst({
@@ -347,7 +334,6 @@ export async function getUserDetail(userId: string) {
     subscriptionDrift: drift,
     lastExpenseAt: lastExpense?.date ?? null,
     billingEvents,
-    recentExpenses,
     revenueCat,
   };
 }

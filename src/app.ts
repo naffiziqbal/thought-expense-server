@@ -5,6 +5,7 @@ import helmet from 'helmet';
 import compression from 'compression';
 import * as Sentry from '@sentry/node';
 
+import { corsOptions } from './config/cors';
 import { aiRateLimit, generalRateLimit } from './middleware/rateLimit';
 import { httpLogger } from './config/logger';
 import authRoutes from './routes/auth.routes';
@@ -24,12 +25,7 @@ const app: Express = express();
 app.set('trust proxy', true);
 
 app.use(helmet());
-app.use(
-  cors({
-    origin: '*',
-    credentials: true,
-  })
-);
+app.use(cors(corsOptions()));
 
 // Rate limiting — Redis-backed after initRateLimiters() (see startServer).
 // Keyed by JWT user id when present, else IP. AI routes are tighter.
