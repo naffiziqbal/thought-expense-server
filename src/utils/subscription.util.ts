@@ -97,6 +97,23 @@ export function buildSubscriptionSummary(snapshot: UserBillingSnapshot): Subscri
   };
 }
 
+/** Manual admin “lifetime” comps are stored as a far-future premiumUntil (not NULL). */
+export const MANUAL_LIFETIME_YEARS = 100;
+
+export function manualPremiumLifetimeUntil(from = new Date()): Date {
+  const d = new Date(from);
+  d.setUTCFullYear(d.getUTCFullYear() + MANUAL_LIFETIME_YEARS);
+  return d;
+}
+
+/** True when until is null (legacy) or ~100y manual lifetime. */
+export function isEffectiveManualLifetime(until: Date | null | undefined): boolean {
+  if (!until) return true;
+  const msPerYear = 365.25 * 24 * 60 * 60 * 1000;
+  const yearsAhead = (until.getTime() - Date.now()) / msPerYear;
+  return yearsAhead >= MANUAL_LIFETIME_YEARS - 1;
+}
+
 /** Clear premium when premiumUntil is in the past (same rule as GET /api/billing/status). */
 export async function refreshStalePremium(
   userId: string,

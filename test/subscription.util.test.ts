@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { buildSubscriptionSummary } from '../src/utils/subscription.util';
+import {
+  buildSubscriptionSummary,
+  isEffectiveManualLifetime,
+  manualPremiumLifetimeUntil,
+  MANUAL_LIFETIME_YEARS,
+} from '../src/utils/subscription.util';
 
 describe('buildSubscriptionSummary', () => {
   it('returns null summary for free users', () => {
@@ -41,5 +46,14 @@ describe('buildSubscriptionSummary', () => {
     });
     expect(summary.plan).toBe('lifetime');
     expect(summary.summaryLine).toBe('Lifetime · Yours forever');
+  });
+});
+
+describe('manualPremiumLifetimeUntil', () => {
+  it('adds 100 years for admin lifetime comps', () => {
+    const from = new Date('2026-01-15T12:00:00.000Z');
+    const until = manualPremiumLifetimeUntil(from);
+    expect(until.getUTCFullYear()).toBe(from.getUTCFullYear() + MANUAL_LIFETIME_YEARS);
+    expect(isEffectiveManualLifetime(until)).toBe(true);
   });
 });

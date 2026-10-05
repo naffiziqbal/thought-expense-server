@@ -99,7 +99,7 @@ export const patchUser = asyncHandler(
       return next(new AppError('No valid fields to update', 400));
     }
     try {
-      const user = await updateUserAdmin(req.params.id, data);
+      const { user, premiumEmailSent } = await updateUserAdmin(req.params.id, data);
       if (!user) return next(new AppError('User not found', 404));
       if (req.admin) {
         await logAdminAction({
@@ -107,11 +107,11 @@ export const patchUser = asyncHandler(
           action: 'user.update',
           targetType: 'user',
           targetId: user.id,
-          metadata: data,
+          metadata: { ...data, premiumEmailSent },
           ipAddress: clientIp(req),
         });
       }
-      res.json({ success: true, data: user });
+      res.json({ success: true, data: user, meta: { premiumEmailSent } });
     } catch {
       return next(new AppError('User not found', 404));
     }
