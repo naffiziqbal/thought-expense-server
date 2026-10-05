@@ -38,7 +38,14 @@ export const parseAndCreateExpenses = asyncHandler(
     const payload = await withIdempotency('expenses-parse', userId, idempotencyKey, async () => {
       const userContext = await getUserContext(userId);
       const parsedExpenses = applySelectedExpenseDate(
-        await parseExpenses(rawInput, req.user!.currency, userContext, selectedDate),
+        await parseExpenses(
+          rawInput,
+          req.user!.currency,
+          userContext,
+          selectedDate,
+          'parse',
+          req.user!.id
+        ),
         selectedDate
       );
 
@@ -775,7 +782,7 @@ export const suggestCategoryForDescription = asyncHandler(
     const userContext = await getUserContext(userId);
 
     // Get AI suggestion
-    const suggestion = await suggestCategory(description, userContext);
+    const suggestion = await suggestCategory(description, userContext, req.user!.id);
 
     res.json({
       success: true,
@@ -825,7 +832,11 @@ export const ocrReceipt = asyncHandler(
       return next(new AppError('No image file provided', 400));
     }
 
-    const text = await extractReceiptText(file.buffer.toString('base64'), file.mimetype);
+    const text = await extractReceiptText(
+      file.buffer.toString('base64'),
+      file.mimetype,
+      req.user!.id
+    );
     if (!text) {
       return next(new AppError('Could not read any expenses from the image', 422));
     }

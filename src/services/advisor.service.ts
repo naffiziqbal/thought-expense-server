@@ -9,6 +9,7 @@ import type { AiMetricKind } from './aiMetrics.service';
 import { SpendingIntelligence } from './analytics.service';
 
 export interface AdvisorContext {
+  userId?: string;
   currency: string;
   currentMonth: {
     month: string; // YYYY-MM
@@ -192,7 +193,7 @@ Return JSON:
   "followUps": ["follow-up question 1", "follow-up question 2"]
 }`;
 
-  const raw = await runInsightsModel(prompt, metricKind);
+  const raw = await runInsightsModel(prompt, metricKind, undefined, ctx.userId);
   try {
     const parsed = extractJson(raw);
     return {
@@ -248,7 +249,7 @@ Return JSON:
   ]
 }`;
 
-  const raw = await runInsightsModel(prompt, 'advisor_savings');
+  const raw = await runInsightsModel(prompt, 'advisor_savings', undefined, ctx.userId);
   const parsed = extractJson(raw);
   const steps: SavingsPlanStep[] = (Array.isArray(parsed.steps) ? parsed.steps : [])
     .map((s: any) => ({
@@ -304,9 +305,12 @@ Return JSON:
   "recommendations": ["recommendation 1", "recommendation 2"]
 }`;
 
-  const raw = await runInsightsModel(prompt, 'briefing', {
-    includeBackupKey: options?.includeBackupKey,
-  });
+  const raw = await runInsightsModel(
+    prompt,
+    'briefing',
+    { includeBackupKey: options?.includeBackupKey },
+    ctx.userId
+  );
   const parsed = extractJson(raw);
   return {
     title: String(parsed.title || 'Your weekly financial briefing').trim(),

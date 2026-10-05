@@ -3,7 +3,10 @@ import prisma from '../config/prisma';
 import { asyncHandler } from '../middleware/error.middleware';
 import { AppError } from '../middleware/error.middleware';
 import { AuthRequest } from '../middleware/auth.middleware';
-import { convertAmountsToCurrency, convertLimitsToCurrency } from '../services/exchangeRate.service';
+import {
+  convertAmountsToCurrency,
+  convertLimitsToCurrency,
+} from '../services/exchangeRate.service';
 import { parseCategoryBudgets } from '../services/gemini.service';
 import { categoryBudgetParseQueue } from '../queues/categoryBudgetParse.queue';
 
@@ -271,7 +274,7 @@ export const parseCategoryBudgetsHandler = asyncHandler(async (req: AuthRequest,
   });
   const known = rows.map((r) => r.category);
 
-  const parsed = await parseCategoryBudgets(text, known);
+  const parsed = await parseCategoryBudgets(text, known, req.user!.id);
 
   res.json({
     success: true,
@@ -299,52 +302,54 @@ export const enqueueParseCategoryBudgets = asyncHandler(async (req: AuthRequest,
   });
 });
 
-export const getCategoryBudgetParseJobStatus = asyncHandler(async (req: AuthRequest, res: Response) => {
-  const userId = req.user!.id;
-  const { jobId } = req.params;
-  const job = await categoryBudgetParseQueue.getJob(jobId);
+export const getCategoryBudgetParseJobStatus = asyncHandler(
+  async (req: AuthRequest, res: Response) => {
+    const userId = req.user!.id;
+    const { jobId } = req.params;
+    const job = await categoryBudgetParseQueue.getJob(jobId);
 
-  if (!job) {
-    throw new AppError('Job not found', 404);
-  }
+    if (!job) {
+      throw new AppError('Job not found', 404);
+    }
 
-  if (job.data.userId !== userId) {
-    throw new AppError('Not authorized to access this job', 403);
-  }
+    if (job.data.userId !== userId) {
+      throw new AppError('Not authorized to access this job', 403);
+    }
 
-  const state = await job.getState();
-  if (state === 'completed') {
+    const state = await job.getState();
+    if (state === 'completed') {
+      res.json({
+        success: true,
+        data: {
+          jobId,
+          status: 'completed',
+          result: job.returnvalue,
+        },
+      });
+      return;
+    }
+
+    if (state === 'failed') {
+      res.json({
+        success: true,
+        data: {
+          jobId,
+          status: 'failed',
+          error: job.failedReason || 'Failed to parse category budgets',
+        },
+      });
+      return;
+    }
+
     res.json({
       success: true,
       data: {
         jobId,
-        status: 'completed',
-        result: job.returnvalue,
+        status: state,
       },
     });
-    return;
   }
-
-  if (state === 'failed') {
-    res.json({
-      success: true,
-      data: {
-        jobId,
-        status: 'failed',
-        error: job.failedReason || 'Failed to parse category budgets',
-      },
-    });
-    return;
-  }
-
-  res.json({
-    success: true,
-    data: {
-      jobId,
-      status: state,
-    },
-  });
-});
+);
 
 // Upsert category budgets for a month
 export const upsertCategoryBudgets = asyncHandler(async (req: AuthRequest, res: Response) => {
@@ -458,4 +463,3 @@ export const getCurrentCategoryBudgets = asyncHandler(async (req: AuthRequest, r
 
   res.json({ success: true, data: result });
 });
-

@@ -3,6 +3,7 @@ import { protectAdmin } from '../middleware/adminAuth.middleware';
 import { adminLogin, adminMe } from '../controllers/adminAuth.controller';
 import {
   getAiUsage,
+  getUserAiUsage,
   getAuditLogs,
   getBillingDrift,
   getBillingEvents,
@@ -17,6 +18,7 @@ import {
   patchUser,
   postReconcileStalePremium,
   postRevokeUserSessions,
+  postUserModeration,
 } from '../controllers/admin.controller';
 
 const router: Router = express.Router();
@@ -29,8 +31,10 @@ router.use(protectAdmin);
 router.get('/stats/overview', getStatsOverview);
 router.get('/growth', getGrowth);
 router.get('/users', getUsers);
+router.get('/users/:id/ai-usage', getUserAiUsage);
 router.get('/users/:id', getUser);
 router.patch('/users/:id', patchUser);
+router.post('/users/:id/moderation', postUserModeration);
 router.post('/users/:id/revoke-sessions', postRevokeUserSessions);
 router.get('/billing/events', getBillingEvents);
 router.get('/billing/drift', getBillingDrift);

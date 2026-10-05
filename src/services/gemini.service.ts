@@ -2,7 +2,12 @@ import { GoogleGenerativeAI, GenerativeModel } from '@google/generative-ai';
 import { findCategoryFromCatalog } from './categoryCatalog.service';
 import { logger } from '../config/logger';
 import { EMBEDDING_DIMENSIONS, isValidEmbedding } from './pinecone.service';
-import { recordAiFallback, recordAiUsage, type AiMetricKind } from './aiMetrics.service';
+import {
+  recordAiFallback,
+  recordAiUsage,
+  recordUserAiUsage,
+  type AiMetricKind,
+} from './aiMetrics.service';
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || '');
 
@@ -118,6 +123,30 @@ export async function generateWithRetryAndFallback<T>(
 
   throw lastError;
 }
+
+function tokensFromUsageMetadata(meta: unknown): number {
+  if (!meta || typeof meta !== 'object') return 0;
+  const m = meta as {
+    totalTokenCount?: number;
+    promptTokenCount?: number;
+    candidatesTokenCount?: number;
+  };
+  if (typeof m.totalTokenCount === 'number' && m.totalTokenCount > 0) return m.totalTokenCount;
+  const prompt = typeof m.promptTokenCount === 'number' ? m.promptTokenCount : 0;
+  const candidates = typeof m.candidatesTokenCount === 'number' ? m.candidatesTokenCount : 0;
+  return prompt + candidates;
+}
+
+function recordGeminiSuccess(
+  kind: AiMetricKind,
+  userId: string | undefined,
+  usageMetadata: unknown
+): void {
+  void recordAiUsage(kind);
+  if (!userId) return;
+  void recordUserAiUsage(userId, kind, tokensFromUsageMetadata(usageMetadata));
+}
+
 const EMBEDDING_MODEL = process.env.EMBEDDING_MODEL || 'gemini-embedding-001';
 
 /**
@@ -127,15 +156,16 @@ const EMBEDDING_MODEL = process.env.EMBEDDING_MODEL || 'gemini-embedding-001';
 export const runInsightsModel = async (
   prompt: string,
   metricKind: AiMetricKind = 'insights',
-  fallbackOptions?: GeminiFallbackOptions
+  fallbackOptions?: GeminiFallbackOptions,
+  userId?: string
 ): Promise<string> => {
-  void recordAiUsage(metricKind);
   const fallbacks = ['gemini-2.0-flash', 'gemini-1.5-flash', 'gemini-1.5-pro'];
   const modelsToTry = [INSIGHTS_MODEL, ...fallbacks.filter((m) => m !== INSIGHTS_MODEL)];
   return generateWithRetryAndFallback(
     modelsToTry,
     async (model) => {
       const result = await model.generateContent(prompt);
+      recordGeminiSuccess(metricKind, userId, result.response.usageMetadata);
       return result.response.text();
     },
     fallbackOptions
@@ -147,15 +177,16 @@ export const runInsightsModel = async (
  */
 export const runParsingModel = async (
   prompt: string,
-  metricKind: AiMetricKind = 'parse'
+  metricKind: AiMetricKind = 'parse',
+  userId?: string
 ): Promise<string> => {
-  void recordAiUsage(metricKind);
   const modelsToTry = [
     PARSING_MODEL,
     ...PARSING_FALLBACK_MODELS.filter((m) => m !== PARSING_MODEL),
   ];
   return generateWithRetryAndFallback(modelsToTry, async (model) => {
     const result = await model.generateContent(prompt);
+    recordGeminiSuccess(metricKind, userId, result.response.usageMetadata);
     return result.response.text();
   });
 };
@@ -302,10 +333,10 @@ export async function parseExpenses(
   userCurrency: string = 'USD',
   userContext: UserContext[] = [],
   defaultDate?: string,
-  metricKind: AiMetricKind = 'parse'
+  metricKind: AiMetricKind = 'parse',
+  userId?: string
 ): Promise<ParsedExpense[]> {
   try {
-    void recordAiUsage(metricKind);
     // Build rich context from user's history
     let contextHint = '';
     if (userContext.length > 0) {
@@ -351,6 +382,7 @@ Return JSON array of expenses:`;
 
     const responseText = await generateWithRetryAndFallback(modelsToTry, async (model) => {
       const result = await model.generateContent(userPrompt);
+      recordGeminiSuccess(metricKind, userId, result.response.usageMetadata);
       return result.response.text();
     });
 
@@ -398,10 +430,10 @@ Return JSON array of expenses:`;
 
 export const parseCategoryBudgets = async (
   text: string,
-  knownCategories: string[] = []
+  knownCategories: string[] = [],
+  userId?: string
 ): Promise<ParsedCategoryBudget[]> => {
   try {
-    void recordAiUsage('budget_category');
     const categoriesHint = knownCategories.length
       ? `Known categories: ${knownCategories.join(', ')}`
       : 'Known categories: Groceries, Health, Medical, Rent, Transport, Entertainment, Utilities, Education, Shopping, Other';
@@ -435,6 +467,7 @@ Rules:
 
     const rawText = await generateWithRetryAndFallback(modelsToTry, async (model) => {
       const result = await model.generateContent(prompt);
+      recordGeminiSuccess('budget_category', userId, result.response.usageMetadata);
       return result.response.text();
     });
 
@@ -469,7 +502,8 @@ Rules:
  */
 export const suggestCategory = async (
   description: string,
-  userContext: UserContext[] = []
+  userContext: UserContext[] = [],
+  userId?: string
 ): Promise<{ category: string; confidence: number; alternatives?: string[] }> => {
   try {
     let contextHint = '';
@@ -506,6 +540,7 @@ Return JSON:
 
     const rawText = await generateWithRetryAndFallback(modelsToTry, async (model) => {
       const result = await model.generateContent(prompt);
+      recordGeminiSuccess('parse', userId, result.response.usageMetadata);
       return result.response.text();
     });
     let jsonText = rawText.trim();
@@ -529,8 +564,7 @@ Return JSON:
  * Generate embedding for text (for RAG)
  * Uses full 3072-dimensional embeddings from gemini-embedding-001
  */
-export const generateEmbedding = async (text: string): Promise<number[]> => {
-  void recordAiUsage('embedding');
+export const generateEmbedding = async (text: string, userId?: string): Promise<number[]> => {
   const input = text.replace(/\s+/g, ' ').trim().slice(0, 4000) || 'expense';
   const clients: Array<{ client: GoogleGenerativeAI; label: string }> = [
     { client: genAI, label: 'primary' },
@@ -549,6 +583,11 @@ export const generateEmbedding = async (text: string): Promise<number[]> => {
           `Embedding length ${Array.isArray(values) ? values.length : typeof values} != Pinecone dimension ${EMBEDDING_DIMENSIONS}`
         );
       }
+      void recordAiUsage('embedding');
+      if (userId) {
+        const estTokens = Math.max(1, Math.ceil(input.length / 4));
+        void recordUserAiUsage(userId, 'embedding', estTokens);
+      }
       return values as number[];
     } catch (error: any) {
       lastError = error;
@@ -565,14 +604,13 @@ export const generateEmbedding = async (text: string): Promise<number[]> => {
 export const generateInsights = async (
   expenses: any[],
   summary: ExpenseSummary,
-  comparisonContext?: string
+  comparisonContext?: string,
+  userId?: string
 ): Promise<string[]> => {
   try {
     if (expenses.length === 0) {
       return ['No expenses to analyze yet. Start tracking to get insights!'];
     }
-
-    void recordAiUsage('insights');
 
     const expenseList = expenses
       .slice(0, 50)
@@ -600,6 +638,7 @@ Return as JSON array of strings:
 
     const rawText = await generateWithRetryAndFallback(modelsToTry, async (model) => {
       const result = await model.generateContent(prompt);
+      recordGeminiSuccess('insights', userId, result.response.usageMetadata);
       return result.response.text();
     });
     let jsonText = rawText.trim();
@@ -622,9 +661,9 @@ export { ParsedExpense, UserContext, ExpenseSummary };
 // ---------------------------------------------------------------------------
 export const extractReceiptText = async (
   imageBase64: string,
-  mimeType: string
+  mimeType: string,
+  userId?: string
 ): Promise<string> => {
-  void recordAiUsage('ocr');
   const prompt = `You are reading a photo of a receipt, invoice, or a handwritten/printed list of expenses.
 Extract every purchasable line item with its price.
 
@@ -646,6 +685,7 @@ OUTPUT RULES:
       { inlineData: { data: imageBase64, mimeType } },
       prompt,
     ]);
+    recordGeminiSuccess('ocr', userId, result.response.usageMetadata);
     return result.response.text();
   });
 

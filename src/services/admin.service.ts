@@ -1,6 +1,7 @@
 import prisma from '../config/prisma';
 import { buildSubscriptionSummary, refreshStalePremium } from '../utils/subscription.util';
 import { getRevenueCatSubscriberForUser } from './adminOps.service';
+import { moderationStatus } from '../utils/userModeration.util';
 
 function daysAgo(n: number): Date {
   const d = new Date();
@@ -195,6 +196,8 @@ export async function listUsers(params: {
         subscriptionStore: true,
         premiumSince: true,
         premiumUntil: true,
+        suspendedAt: true,
+        bannedAt: true,
         createdAt: true,
         _count: { select: { expenses: true, deviceTokens: true } },
       },
@@ -204,6 +207,7 @@ export async function listUsers(params: {
 
   const items = rows.map((u) => ({
     ...u,
+    accountStatus: moderationStatus(u),
     premiumAccess: premiumSource({
       isPremium: u.isPremium,
       subscriptionProductId: u.subscriptionProductId,
@@ -230,6 +234,9 @@ const adminUserDetailSelect = {
   pushEnabled: true,
   budgetAlertsEnabled: true,
   tokenVersion: true,
+  suspendedAt: true,
+  bannedAt: true,
+  moderationNote: true,
   createdAt: true,
   updatedAt: true,
   _count: {
@@ -323,6 +330,7 @@ export async function getUserDetail(userId: string) {
 
   return {
     ...row,
+    accountStatus: moderationStatus(row),
     isPremium: billing.isPremium,
     premiumSince: billing.premiumSince,
     premiumUntil: billing.premiumUntil,
@@ -340,13 +348,22 @@ export async function getUserDetail(userId: string) {
 
 export async function updateUserAdmin(
   userId: string,
-  data: { isPremium?: boolean; subscriptionStatus?: string | null }
+  data: {
+    isPremium?: boolean;
+    subscriptionStatus?: string | null;
+    premiumUntil?: Date | null;
+  }
 ) {
   const patch: {
     isPremium?: boolean;
     subscriptionStatus?: string | null;
     premiumSince?: Date;
-  } = { ...data };
+    premiumUntil?: Date | null;
+  } = {};
+
+  if (typeof data.isPremium === 'boolean') patch.isPremium = data.isPremium;
+  if (data.subscriptionStatus !== undefined) patch.subscriptionStatus = data.subscriptionStatus;
+  if (data.premiumUntil !== undefined) patch.premiumUntil = data.premiumUntil;
 
   if (data.isPremium === true) {
     const existing = await prisma.user.findUnique({

@@ -25,6 +25,9 @@ model User {
   pushEnabled           Boolean   @default(true)
   budgetAlertsEnabled   Boolean   @default(true)
   tokenVersion          Int       @default(0)
+  suspendedAt           DateTime?
+  bannedAt              DateTime?
+  moderationNote        String?
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
 
