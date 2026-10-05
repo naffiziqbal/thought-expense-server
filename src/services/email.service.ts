@@ -12,7 +12,7 @@ function getResend(): Resend {
 
 const FROM_EMAIL = process.env.EMAIL_FROM || 'ThoughtExpense <onboarding@resend.dev>';
 const APP_NAME = process.env.APP_NAME || 'ThoughtExpense';
-const APP_URL = (process.env.FRONTEND_URL || 'https://thoughtexpense.nafiziqbal.com').replace(
+const APP_URL = (process.env.FRONTEND_URL || 'https://thought-expense.nafiziqbal.com').replace(
   /\/$/,
   ''
 );

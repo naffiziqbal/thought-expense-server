@@ -3,7 +3,7 @@ import type { CorsOptions } from 'cors';
 const DEFAULT_ORIGINS = [
   'http://localhost:3000',
   'http://localhost:3022',
-  'https://thoughtexpense.nafiziqbal.com',
+  'https://thought-expense.nafiziqbal.com',
   'https://admin.thought-expense.nafiziqbal.com',
 ];
 
