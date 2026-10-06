@@ -546,7 +546,7 @@ export async function findBillingDriftUsers() {
 export async function listAdminAuditLogs(params: { page: number; limit: number }) {
   const { page, limit } = params;
   const skip = (page - 1) * limit;
-  const [items, total] = await Promise.all([
+  const [rows, total] = await Promise.all([
     prisma.adminAuditLog.findMany({
       skip,
       take: limit,
@@ -557,5 +557,26 @@ export async function listAdminAuditLogs(params: { page: number; limit: number }
     }),
     prisma.adminAuditLog.count(),
   ]);
+
+  const userIds = [
+    ...new Set(
+      rows.filter((r) => r.targetType === 'user' && r.targetId).map((r) => r.targetId as string)
+    ),
+  ];
+  const targetUsers =
+    userIds.length > 0
+      ? await prisma.user.findMany({
+          where: { id: { in: userIds } },
+          select: { id: true, email: true, name: true },
+        })
+      : [];
+  const userById = new Map(targetUsers.map((u) => [u.id, u]));
+
+  const items = rows.map((row) => ({
+    ...row,
+    targetUser:
+      row.targetType === 'user' && row.targetId ? (userById.get(row.targetId) ?? null) : null,
+  }));
+
   return { items, pagination: { page, limit, total, pages: Math.ceil(total / limit) } };
 }
