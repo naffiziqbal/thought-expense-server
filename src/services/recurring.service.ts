@@ -3,6 +3,8 @@
  * Pure function so it can be tested without the DB.
  */
 
+import { normalizeDigits } from '../utils/digits.util';
+
 export interface RecurringCandidate {
   description: string;
   amount: number;
@@ -22,7 +24,7 @@ export interface RecurringExpense {
 }
 
 function normalizeDescription(desc: string): string {
-  return desc
+  return normalizeDigits(desc)
     .toLowerCase()
     .replace(/^\d+\.\s*/, '')
     .replace(/[\d,.]+/g, ' ')
@@ -68,9 +70,7 @@ export function detectRecurring(
     const stable = members.filter((m) => Math.abs(m.amount - med) / med <= 0.25);
     if (stable.length < minMonths) continue;
 
-    const months = new Set(
-      stable.map((m) => `${m.date.getFullYear()}-${m.date.getMonth() + 1}`)
-    );
+    const months = new Set(stable.map((m) => `${m.date.getFullYear()}-${m.date.getMonth() + 1}`));
     if (months.size < minMonths) continue;
 
     const latest = stable.reduce((a, b) => (a.date > b.date ? a : b));

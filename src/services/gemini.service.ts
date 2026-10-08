@@ -1,6 +1,7 @@
 import { GoogleGenerativeAI, GenerativeModel } from '@google/generative-ai';
 import { findCategoryFromCatalog } from './categoryCatalog.service';
 import { logger } from '../config/logger';
+import { normalizeDigits, parseAmount } from '../utils/digits.util';
 import { EMBEDDING_DIMENSIONS, isValidEmbedding } from './pinecone.service';
 import {
   recordAiFallback,
@@ -228,9 +229,17 @@ RULES:
    - "last week", "3 days ago", "monday" → calculate the date
    - "january 15" → use that date from current year
    - If no date mentioned, use {{DEFAULT_DATE}}
-5. If currency is mentioned, use it; otherwise use USD
+5. If currency is mentioned, use it; otherwise use the default currency given below
 6. Assign confidence score (0-1) based on clarity
 7. ALWAYS return an array, even for single expense
+8. Input may be in Bangla (বাংলা), Banglish (Bangla in Latin letters), Hindi, Urdu or mixed with English:
+   - Bangla digits are numbers: "চা ৫০" → amount 50, "রিকশা ১২০" → amount 120
+   - "৳", "টাকা", "tk", "taka" mean BDT
+   - Separators: "," "।" "এবং" "আর" split expenses like "and"
+   - Dates: "আজ" = today, "গতকাল" = yesterday, "গত পরশু" = 2 days ago
+   - Keep "description" in the user's own words and script (e.g. "চা", "rickshaw bhara")
+   - "category" is ALWAYS in English (e.g. "চা" → "Tea & Snacks", "রিকশা" → "Local Transport", "বাজার" → "Groceries")
+   - "amount" is ALWAYS a plain JSON number with ASCII digits (50, not "৫০")
 
 CATEGORY ASSIGNMENT - CRITICAL:
 You are NOT limited to predefined categories. Suggest SPECIFIC, MEANINGFUL categories based on:
@@ -364,7 +373,7 @@ Default date: ${selectedDate}
 
 Parse this expense input:
 """
-${rawInput}
+${normalizeDigits(rawInput)}
 """
 
 REMEMBER:
@@ -411,7 +420,7 @@ Return JSON array of expenses:`;
 
       return {
         description,
-        amount: parseFloat(exp.amount) || 0,
+        amount: parseAmount(exp.amount),
         currency: String(exp.currency || userCurrency).toUpperCase(),
         category: catalogCategory || aiCategory,
         confidence: catalogCategory ? 0.99 : parseFloat(exp.confidence) || 0.5,
@@ -445,7 +454,7 @@ ${categoriesHint}
 
 Input:
 """
-${text}
+${normalizeDigits(text)}
 """
 
 Return ONLY a JSON array like:
@@ -456,7 +465,8 @@ Return ONLY a JSON array like:
 
 Rules:
 - "category" must be a short, human-readable label (match known categories when possible).
-- "limit" is a number (no currency symbol).
+- "limit" is a number with ASCII digits (no currency symbol).
+- Input may be Bangla or Banglish (e.g. "খাবার ৫০০০, বাসা ভাড়া ১৫০০০"); always return English category labels.
 - Ignore unrelated text.
 `;
 
@@ -485,7 +495,7 @@ Rules:
     return items
       .map((i: any) => ({
         category: String(i.category || '').trim(),
-        limit: Number(i.limit),
+        limit: parseAmount(i.limit),
       }))
       .filter((i) => i.category && !isNaN(i.limit) && i.limit > 0);
   } catch (error: any) {

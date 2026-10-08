@@ -27,6 +27,7 @@ import {
 import { getUserContext, updateCategoryMapping } from '../services/rag.service';
 import { withIdempotency } from '../services/idempotency.service';
 import { logger } from '../config/logger';
+import { parseAmount } from '../utils/digits.util';
 import { notifyDocumentImportComplete } from '../services/importPush.service';
 import * as Sentry from '@sentry/node';
 
@@ -36,10 +37,10 @@ let categoryBudgetWorker: Worker<CategoryBudgetParseJobData, CategoryBudgetParse
 
 function previewToParsed(preview: LocalPreviewExpense[], userCurrency: string, rawInput: string) {
   return preview
-    .filter((p) => p.description && Number(p.amount) > 0)
+    .filter((p) => p.description && parseAmount(p.amount) > 0)
     .map((p) => ({
       description: p.description,
-      amount: Number(p.amount),
+      amount: parseAmount(p.amount),
       currency: (p.currency || userCurrency).toUpperCase(),
       category: p.category || 'Other',
       confidence: 0.6,
