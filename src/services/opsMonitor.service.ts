@@ -1,5 +1,3 @@
-import fs from 'fs/promises';
-import path from 'path';
 import type { Queue } from 'bullmq';
 import prisma from '../config/prisma';
 import { logger } from '../config/logger';
@@ -12,7 +10,9 @@ import { briefingQueue, BRIEFING_QUEUE } from '../queues/briefing.queue';
 import { recurringQueue, RECURRING_QUEUE } from '../queues/recurring.queue';
 import { findBillingDriftUsers } from './admin.service';
 import { getAiHealthToday } from './aiMetrics.service';
+import { readLastBackupSuccess } from './backupStorage.service';
 import { setAlertState, type AlertMessage } from './alerts.service';
+import { getRedisClient } from '../config/redis';
 
 /**
  * Periodic ops checks (run by the ops-monitor queue, every 15 min by default).
@@ -194,15 +194,11 @@ async function checkQueues(): Promise<CheckResult[]> {
   return results;
 }
 
-/** Backup script writes BACKUP_DIR/last_success on success; only checked once that file exists. */
+/** Only checked once backup-db.sh has written its success marker on this host. */
 async function checkBackup(): Promise<CheckResult | null> {
-  const dir = process.env.BACKUP_DIR || '/var/backups/thought-expense';
-  let mtimeMs: number;
-  try {
-    mtimeMs = (await fs.stat(path.join(dir, 'last_success'))).mtimeMs;
-  } catch {
-    return null; // no backups on this host (e.g. local dev)
-  }
+  const last = await readLastBackupSuccess();
+  if (!last) return null; // no backups on this host (e.g. local dev)
+  const mtimeMs = last.getTime();
   const maxHours = num('ALERT_BACKUP_MAX_AGE_HOURS', 26);
   const ageHours = (Date.now() - mtimeMs) / 3_600_000;
   return {
@@ -283,8 +279,32 @@ export async function runOpsChecks(): Promise<CheckResult[]> {
   return results;
 }
 
+export const MONITOR_LAST_RUN_KEY = 'ops:monitor:last_run';
+
+export async function getMonitorLastRun(): Promise<{
+  at: string;
+  checks: number;
+  firing: number;
+} | null> {
+  const raw = await getRedisClient().get(MONITOR_LAST_RUN_KEY);
+  return raw ? JSON.parse(raw) : null;
+}
+
 export async function runOpsMonitor(): Promise<{ firing: string[] }> {
   const results = await runOpsChecks();
   for (const r of results) await setAlertState(r.key, r.firing, r.message);
-  return { firing: results.filter((r) => r.firing).map((r) => r.key) };
+  const firing = results.filter((r) => r.firing).map((r) => r.key);
+  try {
+    await getRedisClient().set(
+      MONITOR_LAST_RUN_KEY,
+      JSON.stringify({
+        at: new Date().toISOString(),
+        checks: results.length,
+        firing: firing.length,
+      })
+    );
+  } catch (err) {
+    logger.debug({ err }, 'Could not record ops monitor run');
+  }
+  return { firing };
 }

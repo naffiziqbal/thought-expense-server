@@ -17,6 +17,27 @@ import {
 import { applyUserModeration, type ModerationAction } from '../services/userModeration.service';
 import { getAiUsageSeries, getUserAiUsageSummary } from '../services/aiMetrics.service';
 import {
+  getDatabaseHealth,
+  getDeployInfo,
+  getMigrationStatus,
+} from '../services/systemStatus.service';
+import {
+  alertsEnabled,
+  formatAlert,
+  getFiringAlerts,
+  sendAlert,
+  sendTelegramMessage,
+} from '../services/alerts.service';
+import { getMonitorLastRun } from '../services/opsMonitor.service';
+import {
+  BackupNotFoundError,
+  BackupStorageUnavailableError,
+  createBackupDownloadLink,
+  listBackups,
+  readLastBackupSuccess,
+} from '../services/backupStorage.service';
+import { logger } from '../config/logger';
+import {
   getQueueMonitorStats,
   getRagHealthStats,
   getRedisHealth,
@@ -197,18 +218,121 @@ export const getAuditLogs = asyncHandler(async (req: AdminAuthRequest, res: Resp
 });
 
 export const getSystemHealth = asyncHandler(async (_req: AdminAuthRequest, res: Response) => {
-  const redis = await getRedisHealth();
+  const [redis, database, migrations] = await Promise.all([
+    getRedisHealth(),
+    getDatabaseHealth(),
+    getMigrationStatus().catch(() => null),
+  ]);
+
+  // Alert state lives in Redis; a Redis outage shouldn't fail the whole page.
+  let alerts: {
+    telegramConfigured: boolean;
+    envLabel: string;
+    monitorLastRun: Awaited<ReturnType<typeof getMonitorLastRun>>;
+    firing: Awaited<ReturnType<typeof getFiringAlerts>>;
+  } | null = null;
+  try {
+    const [monitorLastRun, firing] = await Promise.race([
+      Promise.all([getMonitorLastRun(), getFiringAlerts()]),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Redis timeout')), 3000)),
+    ]);
+    alerts = {
+      telegramConfigured: alertsEnabled(),
+      envLabel: process.env.ALERT_ENV_LABEL || process.env.NODE_ENV || 'development',
+      monitorLastRun,
+      firing,
+    };
+  } catch (err) {
+    logger.warn({ err }, 'Could not read alert status');
+  }
+
+  const migrationsOk =
+    !!migrations &&
+    !migrations.historyMissing &&
+    migrations.pending.length === 0 &&
+    migrations.failed.length === 0;
+  const status = !database.ok ? 'down' : !redis.ok || !migrationsOk ? 'degraded' : 'ok';
+
   res.json({
     success: true,
     data: {
-      status: redis.ok ? 'ok' : 'degraded',
+      status,
       timestamp: new Date().toISOString(),
       uptime: process.uptime(),
       nodeEnv: process.env.NODE_ENV || 'development',
       redis,
+      database,
+      migrations,
+      deploy: getDeployInfo(),
+      alerts,
     },
   });
 });
+
+export const getSystemBackups = asyncHandler(async (_req: AdminAuthRequest, res: Response) => {
+  const [storage, lastSuccess] = await Promise.all([listBackups(10), readLastBackupSuccess()]);
+  res.json({
+    success: true,
+    data: { ...storage, lastSuccessAt: lastSuccess?.toISOString() ?? null },
+  });
+});
+
+/** Hands out the full database — audit-logged and announced on Telegram. */
+export const postBackupDownloadLink = asyncHandler(
+  async (req: AdminAuthRequest, res: Response, next: NextFunction) => {
+    const key = typeof req.body?.key === 'string' ? req.body.key : '';
+    const minutes = Number(process.env.BACKUP_ADMIN_LINK_TTL_MINUTES) || 60;
+    let link: { url: string; expiresAt: string };
+    try {
+      link = await createBackupDownloadLink(key, minutes);
+    } catch (err) {
+      if (err instanceof BackupNotFoundError) return next(new AppError(err.message, 404));
+      if (err instanceof BackupStorageUnavailableError) return next(new AppError(err.message, 503));
+      throw err;
+    }
+
+    await logAdminAction({
+      adminId: req.admin!.id,
+      action: 'backup.download_link',
+      targetType: 'system',
+      targetId: key,
+      metadata: { expiresAt: link.expiresAt },
+      ipAddress: clientIp(req),
+    });
+    void sendAlert(
+      `backup_link:${req.admin!.id}:${Date.now()}`,
+      {
+        severity: 'info',
+        title: 'Backup download link created',
+        lines: [
+          `${key.split('/').pop()} by admin ${req.admin!.email}`,
+          `From ${clientIp(req) ?? 'unknown IP'}; link valid ${minutes} min.`,
+        ],
+      },
+      60
+    );
+
+    res.json({ success: true, data: link });
+  }
+);
+
+export const postTestAlert = asyncHandler(
+  async (req: AdminAuthRequest, res: Response, next: NextFunction) => {
+    if (!alertsEnabled()) {
+      return next(
+        new AppError(
+          'Telegram is not configured on the API (TELEGRAM_BOT_TOKEN / TELEGRAM_ALERT_CHAT_ID)',
+          400
+        )
+      );
+    }
+    const ok = await sendTelegramMessage(
+      formatAlert('👋', 'Test alert from the admin console', [`Sent by ${req.admin!.email}.`])
+    );
+    if (!ok) return next(new AppError('Telegram rejected the message — check the server log', 502));
+    res.json({ success: true, message: 'Test alert sent' });
+  }
+);
 
 export const getAiUsage = asyncHandler(async (req: AdminAuthRequest, res: Response) => {
   const days = Math.min(90, Math.max(7, parseInt(String(req.query.days || '30'), 10) || 30));

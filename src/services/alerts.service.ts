@@ -118,9 +118,30 @@ const RENOTIFY_SECONDS: Record<AlertSeverity, number> = {
   info: 24 * 60 * 60,
 };
 
+interface AlertStateRecord {
+  since: number;
+  notifiedAt: number;
+  title: string;
+  severity: AlertSeverity;
+}
+
+function parseState(key: string, raw: string | null): AlertStateRecord | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    if (typeof parsed === 'number') {
+      // Older format: just the last-notified timestamp.
+      return { since: parsed, notifiedAt: parsed, title: key, severity: 'warning' };
+    }
+    return parsed as AlertStateRecord;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Track a monitored condition. Sends on firing → (reminder while firing) → resolved.
- * State lives in Redis (`alert:state:<key>` = last notified ms) with no TTL.
+ * State lives in Redis (`alert:state:<key>`, JSON) with no TTL.
  */
 export async function setAlertState(
   key: string,
@@ -131,34 +152,67 @@ export async function setAlertState(
     if (!alertsEnabled()) return;
     const client = getRedisClient();
     const stateKey = `alert:state:${key}`;
-    const last = await client.get(stateKey);
+    const state = parseState(key, await client.get(stateKey));
     const now = Date.now();
+    const save = (since: number) =>
+      client.set(
+        stateKey,
+        JSON.stringify({ since, notifiedAt: now, title: message.title, severity: message.severity })
+      );
 
     if (firing) {
-      if (!last) {
+      if (!state) {
         if (
           await sendTelegramMessage(
             formatAlert(ICONS[message.severity], message.title, message.lines)
           )
         ) {
-          await client.set(stateKey, String(now));
+          await save(now);
         }
         return;
       }
-      if (now - Number(last) >= RENOTIFY_SECONDS[message.severity] * 1000) {
+      if (now - state.notifiedAt >= RENOTIFY_SECONDS[message.severity] * 1000) {
         const lines = [...(message.lines ?? []), 'Still ongoing.'];
         if (await sendTelegramMessage(formatAlert(ICONS[message.severity], message.title, lines))) {
-          await client.set(stateKey, String(now));
+          await save(state.since);
         }
       }
       return;
     }
 
-    if (last) {
+    if (state) {
       await sendTelegramMessage(formatAlert(ICONS.resolved, `Resolved: ${message.title}`));
       await client.del(stateKey);
     }
   } catch (err) {
     logger.warn({ err, key }, 'setAlertState failed');
   }
+}
+
+/** Conditions currently firing (for the admin System page). */
+export async function getFiringAlerts(): Promise<
+  Array<{ key: string; title: string; severity: AlertSeverity; since: string }>
+> {
+  const client = getRedisClient();
+  const keys: string[] = [];
+  for await (const key of client.scanIterator({ MATCH: 'alert:state:*', COUNT: 100 })) {
+    keys.push(String(key));
+  }
+  if (keys.length === 0) return [];
+  const values = await client.mGet(keys);
+  return keys
+    .map((stateKey, i) => {
+      const key = stateKey.slice('alert:state:'.length);
+      const state = parseState(key, values[i]);
+      return state
+        ? {
+            key,
+            title: state.title,
+            severity: state.severity,
+            since: new Date(state.since).toISOString(),
+          }
+        : null;
+    })
+    .filter((a): a is NonNullable<typeof a> => a !== null)
+    .sort((a, b) => a.since.localeCompare(b.since));
 }

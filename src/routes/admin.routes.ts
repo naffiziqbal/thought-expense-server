@@ -19,7 +19,10 @@ import {
   getRagHealth,
   getRevenueCatSync,
   getStatsOverview,
+  getSystemBackups,
   getSystemHealth,
+  postBackupDownloadLink,
+  postTestAlert,
   getUser,
   getUsers,
   patchUser,
@@ -51,6 +54,9 @@ router.get('/billing/drift', getBillingDrift);
 router.post('/billing/reconcile-stale', postReconcileStalePremium);
 router.get('/audit', getAuditLogs);
 router.get('/system/health', getSystemHealth);
+router.get('/system/backups', getSystemBackups);
+router.post('/system/backups/link', postBackupDownloadLink);
+router.post('/system/alerts/test', postTestAlert);
 router.get('/ai/usage', getAiUsage);
 router.get('/queues', getQueueMonitor);
 router.get('/rag/health', getRagHealth);
