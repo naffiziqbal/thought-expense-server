@@ -53,7 +53,7 @@ const QUEUES: Array<{ name: string; queue: Queue; maxFailures: number }> = [
   { name: RECURRING_QUEUE, queue: recurringQueue, maxFailures: 1 },
 ];
 
-async function checkDatabase(): Promise<CheckResult> {
+export async function checkDatabase(): Promise<CheckResult> {
   const message: AlertMessage = { severity: 'critical', title: 'Database unreachable' };
   try {
     await prisma.$queryRaw`SELECT 1`;
@@ -64,7 +64,7 @@ async function checkDatabase(): Promise<CheckResult> {
   }
 }
 
-async function checkWebhookErrors(): Promise<CheckResult> {
+export async function checkWebhookErrors(): Promise<CheckResult> {
   const since = new Date(Date.now() - WINDOW_MS);
   const rows = await prisma.billingWebhookEvent.findMany({
     where: { outcome: 'error', createdAt: { gte: since } },
@@ -216,9 +216,24 @@ async function checkBackup(): Promise<CheckResult | null> {
   };
 }
 
+/**
+ * A stalled dependency must not hang the run: BullMQ's Redis connection retries
+ * forever, and the monitor worker runs one job at a time, so one stuck check
+ * would silently stop every later run.
+ */
+const CHECK_TIMEOUT_MS = 20_000;
+
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`timed out after ${ms / 1000}s`)), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
 async function safely<T>(name: string, fn: () => Promise<T>): Promise<T | CheckResult> {
   try {
-    return await fn();
+    return await withTimeout(fn(), CHECK_TIMEOUT_MS);
   } catch (err) {
     logger.warn({ err, check: name }, 'Ops check failed');
     return {

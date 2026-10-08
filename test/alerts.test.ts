@@ -1,7 +1,7 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import prisma from '../src/config/prisma';
 import { escapeHtml, formatAlert, sendAlert } from '../src/services/alerts.service';
-import { runOpsChecks } from '../src/services/opsMonitor.service';
+import { checkDatabase, checkWebhookErrors } from '../src/services/opsMonitor.service';
 
 const env = { ...process.env };
 const eventIds: string[] = [];
@@ -65,6 +65,7 @@ describe('sendAlert', () => {
   });
 });
 
+// Individual checks only: CI has no Redis, and the queue/AI checks need it.
 describe('ops checks', () => {
   it('fires webhook_errors when a webhook failed recently', async () => {
     const id = `alert-test-${Date.now()}`;
@@ -73,10 +74,12 @@ describe('ops checks', () => {
       data: { externalEventId: id, eventType: 'RENEWAL', outcome: 'error' },
     });
 
-    const results = await runOpsChecks();
-    const check = results.find((r) => r.key === 'webhook_errors');
-    expect(check?.firing).toBe(true);
-    expect(check?.message.lines?.join(' ')).toContain('RENEWAL');
-    expect(results.find((r) => r.key === 'database')?.firing).toBe(false);
+    const check = await checkWebhookErrors();
+    expect(check.firing).toBe(true);
+    expect(check.message.lines?.join(' ')).toContain('RENEWAL');
+  });
+
+  it('reports the database as healthy', async () => {
+    expect((await checkDatabase()).firing).toBe(false);
   });
 });
