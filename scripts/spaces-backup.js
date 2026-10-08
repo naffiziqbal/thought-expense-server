@@ -6,6 +6,7 @@
  *   node scripts/spaces-backup.js list               list stored dumps
  *   node scripts/spaces-backup.js prune [--dry-run]  apply retention only
  *   node scripts/spaces-backup.js download <key> <dest>
+ *   node scripts/spaces-backup.js link <file-or-key> [hours]   print an expiring download URL
  *
  * Retention keeps every dump from the last BACKUP_KEEP_DAYS days, plus the
  * earliest dump of each month for BACKUP_KEEP_MONTHS months, and deletes the
@@ -30,6 +31,7 @@ const {
   DeleteObjectsCommand,
   GetObjectCommand,
 } = require('@aws-sdk/client-s3');
+const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
 
 const BUCKET = process.env.BACKUP_SPACES_BUCKET;
 const PREFIX = (process.env.BACKUP_SPACES_PREFIX || 'thoughtexpense/db').replace(/^\/+|\/+$/g, '');
@@ -181,6 +183,30 @@ async function download(s3, key, dest) {
   console.log(`downloaded ${key} -> ${dest}`);
 }
 
+/**
+ * Print a private download URL that stops working after `hours` (default
+ * BACKUP_LINK_TTL_HOURS or 24; S3 signatures cap at 7 days). Accepts a local
+ * dump path or a bare filename, resolved under the backup prefix.
+ */
+async function link(s3, fileOrKey, hoursArg) {
+  if (!fileOrKey) die('usage: spaces-backup.js link <file-or-key> [hours]');
+  const key = fileOrKey.startsWith(`${PREFIX}/`) ? fileOrKey : `${PREFIX}/${path.basename(fileOrKey)}`;
+  const hours = Number(hoursArg || process.env.BACKUP_LINK_TTL_HOURS || 24);
+  if (!Number.isFinite(hours) || hours <= 0) die(`invalid hours: ${hoursArg}`);
+  const expiresIn = Math.min(Math.round(hours * 3600), 7 * 24 * 3600);
+
+  const url = await getSignedUrl(
+    s3,
+    new GetObjectCommand({
+      Bucket: BUCKET,
+      Key: key,
+      ResponseContentDisposition: `attachment; filename="${path.basename(key)}"`,
+    }),
+    { expiresIn }
+  );
+  process.stdout.write(`${url}\n`);
+}
+
 async function main() {
   const [command, ...args] = process.argv.slice(2);
   const s3 = client();
@@ -194,8 +220,10 @@ async function main() {
       return prune(s3, { dryRun: args.includes('--dry-run') });
     case 'download':
       return download(s3, args[0], args[1]);
+    case 'link':
+      return link(s3, args[0], args[1]);
     default:
-      die('usage: spaces-backup.js <upload|list|prune|download> [args]');
+      die('usage: spaces-backup.js <upload|list|prune|download|link> [args]');
   }
 }
 

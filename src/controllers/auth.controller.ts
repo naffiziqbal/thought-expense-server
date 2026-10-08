@@ -16,6 +16,7 @@ import { authUserSelect, formatAuthUser } from '../utils/authUser.util';
 import { refreshStalePremium } from '../utils/subscription.util';
 import { moderationBlockMessage, moderationStatus } from '../utils/userModeration.util';
 import { normalizeIso4217Code } from '../utils/iso4217';
+import { archiveDeletedAccount } from '../services/deletedAccount.service';
 
 // Generate JWT token
 const generateToken = (userId: string, tokenVersion = 0): string => {
@@ -507,6 +508,9 @@ export const deleteAccount = asyncHandler(
     if (!isMatch) {
       return next(new AppError('Incorrect password', 401));
     }
+
+    // Anonymous churn record — must run before cache cleanup wipes the user's AI metrics.
+    await archiveDeletedAccount(userId);
 
     // Best-effort cleanup of external data (vector index, stored avatar, caches)
     try {

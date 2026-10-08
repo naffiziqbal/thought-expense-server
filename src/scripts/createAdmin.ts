@@ -39,7 +39,8 @@ async function main() {
   const admin = await prisma.admin.upsert({
     where: { email },
     create: { email, password: hashed, name },
-    update: { password: hashed, name },
+    // Password reset: bump tokenVersion so every existing console session is signed out.
+    update: { password: hashed, name, tokenVersion: { increment: 1 } },
     select: { id: true, email: true, name: true, createdAt: true },
   });
 

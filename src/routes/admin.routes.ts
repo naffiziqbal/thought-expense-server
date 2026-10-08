@@ -1,6 +1,13 @@
 import express, { Router } from 'express';
 import { protectAdmin } from '../middleware/adminAuth.middleware';
-import { adminLogin, adminMe } from '../controllers/adminAuth.controller';
+import {
+  adminLogin,
+  adminLogout,
+  adminLogoutAll,
+  adminMe,
+  adminRefresh,
+} from '../controllers/adminAuth.controller';
+import { loginLimiter } from '../middleware/rateLimit';
 import {
   getAiUsage,
   getUserAiUsage,
@@ -23,8 +30,11 @@ import {
 
 const router: Router = express.Router();
 
-router.post('/auth/login', adminLogin);
+router.post('/auth/login', loginLimiter, adminLogin);
+router.post('/auth/refresh', loginLimiter, adminRefresh);
+router.post('/auth/logout', adminLogout);
 router.get('/auth/me', protectAdmin, adminMe);
+router.post('/auth/logout-all', protectAdmin, adminLogoutAll);
 
 router.use(protectAdmin);
 

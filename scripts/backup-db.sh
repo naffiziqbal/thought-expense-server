@@ -40,6 +40,9 @@ MIN_DUMP_BYTES="$(cfg MIN_DUMP_BYTES 10000)"
 SPACES_BUCKET="$(cfg BACKUP_SPACES_BUCKET)"
 HEALTHCHECK_URL="$(cfg BACKUP_HEALTHCHECK_URL)"
 LOCAL_ONLY="$(cfg BACKUP_LOCAL_ONLY)"
+TELEGRAM_BOT_TOKEN="$(cfg TELEGRAM_BOT_TOKEN)"
+TELEGRAM_ALERT_CHAT_ID="$(cfg TELEGRAM_ALERT_CHAT_ID)"
+LINK_HOURS="$(cfg BACKUP_LINK_TTL_HOURS 24)"
 
 timestamp="$(date -u +%F_%H-%M-%S)"
 target="${BACKUP_DIR}/db_${timestamp}.dump"
@@ -47,12 +50,21 @@ partial="${target}.partial"
 
 log() { printf '%s  %s\n' "$(date -u +'%F %T UTC')" "$*"; }
 
+# Best effort: a failed alert must never mask the original failure.
+telegram() {
+  [ -n "$TELEGRAM_BOT_TOKEN" ] && [ -n "$TELEGRAM_ALERT_CHAT_ID" ] || return 0
+  curl -fsS -m 10 "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+    --data-urlencode "chat_id=${TELEGRAM_ALERT_CHAT_ID}" \
+    --data-urlencode "text=$1" >/dev/null 2>&1 || true
+}
+
 fail() {
   log "FAILED: $*"
   rm -f "$partial"
   if [ -n "$HEALTHCHECK_URL" ]; then
     curl -fsS -m 10 "${HEALTHCHECK_URL}/fail" >/dev/null 2>&1 || true
   fi
+  telegram "🚨 Database backup FAILED on $(hostname): $*"
   exit 1
 }
 
@@ -82,6 +94,7 @@ elif [ -z "$SPACES_BUCKET" ]; then
   fail "BACKUP_SPACES_BUCKET is not set; configure it, or set BACKUP_LOCAL_ONLY=1 to accept a local-only copy"
 else
   node "${SERVER_DIR}/scripts/spaces-backup.js" upload "$target" || fail "upload to Spaces failed"
+  uploaded=1
 fi
 
 pruned="$(find "$BACKUP_DIR" -maxdepth 1 -type f -name 'db_*.dump' -mtime "+${LOCAL_RETENTION_DAYS}" -print -delete | wc -l | tr -d '[:space:]')"
@@ -89,6 +102,26 @@ log "pruned ${pruned} local dump(s) older than ${LOCAL_RETENTION_DAYS} day(s)"
 
 if [ -n "$HEALTHCHECK_URL" ]; then
   curl -fsS -m 10 "$HEALTHCHECK_URL" >/dev/null 2>&1 || log "warning: healthcheck ping failed"
+fi
+
+# Marker read by the API's ops monitor: alerts if no successful backup in ALERT_BACKUP_MAX_AGE_HOURS.
+date -u +%FT%TZ > "${BACKUP_DIR}/last_success"
+
+# Daily confirmation with an expiring, private download link. The URL is only
+# held in memory and sent to Telegram — never written to the log.
+size_mb="$(awk -v b="$size" 'BEGIN { printf "%.1f", b / 1048576 }')"
+summary="✅ Backup OK — ${size_mb} MB, $(date -u +'%F %H:%M UTC') on $(hostname)"
+if [ -n "${uploaded:-}" ]; then
+  if url="$(node "${SERVER_DIR}/scripts/spaces-backup.js" link "$target" "$LINK_HOURS" 2>/dev/null)" && [ -n "$url" ]; then
+    printf -v message '%s\n\nDownload (expires in %sh — anyone with this link can download the full database, do not forward):\n%s' \
+      "$summary" "$LINK_HOURS" "$url"
+    telegram "$message"
+  else
+    log "warning: could not create a download link"
+    telegram "${summary} (download link could not be created — use spaces-backup.js list/download)"
+  fi
+else
+  telegram "${summary} (local copy only — no download link)"
 fi
 
 log "done"

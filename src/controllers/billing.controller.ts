@@ -9,7 +9,11 @@ import {
   refreshStalePremium,
   billingFieldsSelect,
 } from '../utils/subscription.util';
-import { recordBillingWebhookEvent } from '../services/billingWebhookLog.service';
+import {
+  recordBillingWebhookEvent,
+  revenueFieldsFromEvent,
+} from '../services/billingWebhookLog.service';
+import { sendAlert } from '../services/alerts.service';
 
 /**
  * RevenueCat webhook -> keep User.isPremium/premiumUntil in sync with the
@@ -54,6 +58,8 @@ export const revenuecatWebhook = asyncHandler(
     }
 
     const eventId = typeof event.id === 'string' ? event.id : null;
+    // Prices go only on rows we handled (not duplicate/error) so revenue is never double counted.
+    const revenue = revenueFieldsFromEvent(event);
     const appUserId =
       typeof event.app_user_id === 'string' && !event.app_user_id.startsWith('$RCAnonymousID:')
         ? event.app_user_id
@@ -101,6 +107,7 @@ export const revenuecatWebhook = asyncHandler(
           externalEventId: eventId,
           eventType: event.type,
           appUserId,
+          revenue,
           outcome: 'unmapped',
         });
         res.json({ success: true, message: 'No matching user' });
@@ -156,6 +163,7 @@ export const revenuecatWebhook = asyncHandler(
           userId: user.id,
           productId,
           store,
+          revenue,
           outcome: 'processed',
         });
       } else {
@@ -166,6 +174,7 @@ export const revenuecatWebhook = asyncHandler(
           userId: user.id,
           productId,
           store,
+          revenue,
           outcome: 'ignored',
         });
       }
@@ -177,8 +186,23 @@ export const revenuecatWebhook = asyncHandler(
         externalEventId: eventId,
         eventType: event.type,
         appUserId,
+        // RevenueCat retries failures; the later 'processed' row carries the price.
+        revenue: { payload: revenue.payload },
         outcome: 'error',
       });
+      void sendAlert(
+        'webhook_error',
+        {
+          severity: 'critical',
+          title: 'RevenueCat webhook crashed',
+          lines: [
+            `${event.type} for user ${appUserId ?? 'unknown'}`,
+            err instanceof Error ? err.message.slice(0, 200) : String(err),
+            'RevenueCat will retry; premium may be wrong until it succeeds.',
+          ],
+        },
+        15 * 60
+      );
       throw err;
     }
   }

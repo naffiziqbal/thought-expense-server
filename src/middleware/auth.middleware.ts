@@ -3,6 +3,7 @@ import jwt from 'jsonwebtoken';
 import { AppError } from './error.middleware';
 import prisma from '../config/prisma';
 import { moderationBlockMessage, moderationStatus } from '../utils/userModeration.util';
+import { touchLastActive } from '../services/userActivity.service';
 
 interface JwtPayload {
   id: string;
@@ -79,6 +80,7 @@ export const protect = async (
       }
 
       req.user = sessionUser;
+      touchLastActive(user.id);
       next();
     } catch {
       return next(new AppError('Not authorized to access this route', 401));

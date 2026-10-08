@@ -226,8 +226,7 @@ export const getUserAiUsage = asyncHandler(
       success: true,
       data: {
         ...data,
-        days,
-        note: 'Counts from deploy forward; tokens from Gemini usageMetadata when available.',
+        note: 'Cost is estimated at Gemini paid-tier list price from per-call input/output tokens (thinking billed as output). Free-tier calls are not actually billed.',
       },
     });
   }

@@ -1,11 +1,12 @@
 import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
-import prisma from '../config/prisma';
+import { getActiveAdminForSession } from '../services/adminSession.service';
 import { AppError } from './error.middleware';
 
 interface AdminJwtPayload {
   id: string;
   ver?: number;
+  sid?: string;
   purpose?: string;
 }
 
@@ -15,6 +16,7 @@ export interface AdminAuthRequest extends Request {
     email: string;
     name: string | null;
   };
+  adminSessionId?: string;
 }
 
 export const protectAdmin = async (
@@ -35,20 +37,18 @@ export const protectAdmin = async (
         return next(new AppError('Not authorized to access this route', 401));
       }
 
-      const row = await prisma.admin.findUnique({
-        where: { id: decoded.id },
-        select: { id: true, email: true, name: true, tokenVersion: true },
-      });
-
-      if (!row) {
-        return next(new AppError('Admin account no longer exists', 401));
+      // Tokens issued before sessions existed have no sid: force a fresh login.
+      if (typeof decoded.sid !== 'string' || !decoded.sid) {
+        return next(new AppError('Session expired', 401));
       }
 
       const tokenVer = typeof decoded.ver === 'number' ? decoded.ver : 0;
-      if (tokenVer !== row.tokenVersion) {
-        return next(new AppError('Not authorized to access this route', 401));
+      const row = await getActiveAdminForSession(decoded.sid, decoded.id, tokenVer);
+      if (!row) {
+        return next(new AppError('Session expired', 401));
       }
 
+      req.adminSessionId = decoded.sid;
       req.admin = { id: row.id, email: row.email, name: row.name };
       next();
     } catch {

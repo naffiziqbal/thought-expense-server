@@ -1,19 +1,23 @@
 import bcrypt from 'bcryptjs';
-import jwt, { SignOptions } from 'jsonwebtoken';
 import { Response, NextFunction } from 'express';
 import prisma from '../config/prisma';
 import { asyncHandler, AppError } from '../middleware/error.middleware';
 import { AdminAuthRequest } from '../middleware/adminAuth.middleware';
+import {
+  AdminSessionError,
+  createAdminSession,
+  revokeAdminSessionByRefreshToken,
+  revokeAllAdminSessions,
+  rotateAdminSession,
+} from '../services/adminSession.service';
 
 function normalizeEmail(raw: unknown): string {
   return typeof raw === 'string' ? raw.trim().toLowerCase() : '';
 }
 
-function adminToken(adminId: string, tokenVersion: number): string {
-  const secret = process.env.JWT_SECRET as string;
-  return jwt.sign({ id: adminId, ver: tokenVersion, purpose: 'admin_access' }, secret, {
-    expiresIn: process.env.ADMIN_JWT_EXPIRES_IN || '12h',
-  } as SignOptions);
+function refreshTokenFromBody(req: AdminAuthRequest): string {
+  const raw = req.body?.refreshToken;
+  return typeof raw === 'string' ? raw.trim() : '';
 }
 
 export const adminLogin = asyncHandler(
@@ -40,7 +44,10 @@ export const adminLogin = asyncHandler(
       data: { lastLoginAt: new Date() },
     });
 
-    const token = adminToken(admin.id, admin.tokenVersion);
+    const tokens = await createAdminSession(admin, {
+      ipAddress: req.ip,
+      userAgent: req.get('user-agent'),
+    });
 
     res.json({
       success: true,
@@ -51,7 +58,7 @@ export const adminLogin = asyncHandler(
           email: admin.email,
           name: admin.name,
         },
-        token,
+        ...tokens,
       },
     });
   }
@@ -62,4 +69,29 @@ export const adminMe = asyncHandler(async (req: AdminAuthRequest, res: Response)
     success: true,
     data: { admin: req.admin },
   });
+});
+
+/** Rotate the refresh token and issue a new access token. */
+export const adminRefresh = asyncHandler(
+  async (req: AdminAuthRequest, res: Response, next: NextFunction) => {
+    try {
+      const data = await rotateAdminSession(refreshTokenFromBody(req));
+      res.json({ success: true, data });
+    } catch (err) {
+      if (err instanceof AdminSessionError) return next(new AppError(err.message, 401));
+      throw err;
+    }
+  }
+);
+
+/** Sign out this browser by its refresh token. Always succeeds (logout must work with a dead access token). */
+export const adminLogout = asyncHandler(async (req: AdminAuthRequest, res: Response) => {
+  await revokeAdminSessionByRefreshToken(refreshTokenFromBody(req));
+  res.json({ success: true, message: 'Signed out' });
+});
+
+/** Sign out every browser for this admin (also invalidates outstanding access tokens). */
+export const adminLogoutAll = asyncHandler(async (req: AdminAuthRequest, res: Response) => {
+  await revokeAllAdminSessions(req.admin!.id);
+  res.json({ success: true, message: 'Signed out everywhere' });
 });

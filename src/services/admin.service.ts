@@ -243,6 +243,7 @@ const adminUserDetailSelect = {
   suspendedAt: true,
   bannedAt: true,
   moderationNote: true,
+  lastActiveAt: true,
   createdAt: true,
   updatedAt: true,
   _count: {

@@ -125,27 +125,32 @@ export async function generateWithRetryAndFallback<T>(
   throw lastError;
 }
 
-function tokensFromUsageMetadata(meta: unknown): number {
-  if (!meta || typeof meta !== 'object') return 0;
+function usageFromMetadata(meta: unknown): { inputTokens: number; outputTokens: number } {
+  if (!meta || typeof meta !== 'object') return { inputTokens: 0, outputTokens: 0 };
   const m = meta as {
     totalTokenCount?: number;
     promptTokenCount?: number;
     candidatesTokenCount?: number;
+    thoughtsTokenCount?: number;
   };
-  if (typeof m.totalTokenCount === 'number' && m.totalTokenCount > 0) return m.totalTokenCount;
-  const prompt = typeof m.promptTokenCount === 'number' ? m.promptTokenCount : 0;
-  const candidates = typeof m.candidatesTokenCount === 'number' ? m.candidatesTokenCount : 0;
-  return prompt + candidates;
+  const num = (v: unknown) => (typeof v === 'number' && v > 0 ? v : 0);
+  const inputTokens = num(m.promptTokenCount);
+  // Thinking tokens are billed as output; the SDK types omit the field but the API returns it.
+  let outputTokens = num(m.candidatesTokenCount) + num(m.thoughtsTokenCount);
+  const total = num(m.totalTokenCount);
+  if (total > inputTokens + outputTokens) outputTokens = total - inputTokens;
+  return { inputTokens, outputTokens };
 }
 
 function recordGeminiSuccess(
   kind: AiMetricKind,
   userId: string | undefined,
-  usageMetadata: unknown
+  usageMetadata: unknown,
+  model: string
 ): void {
   void recordAiUsage(kind);
   if (!userId) return;
-  void recordUserAiUsage(userId, kind, tokensFromUsageMetadata(usageMetadata));
+  void recordUserAiUsage(userId, kind, { model, ...usageFromMetadata(usageMetadata) });
 }
 
 const EMBEDDING_MODEL = process.env.EMBEDDING_MODEL || 'gemini-embedding-001';
@@ -166,7 +171,7 @@ export const runInsightsModel = async (
     modelsToTry,
     async (model) => {
       const result = await model.generateContent(prompt);
-      recordGeminiSuccess(metricKind, userId, result.response.usageMetadata);
+      recordGeminiSuccess(metricKind, userId, result.response.usageMetadata, model.model);
       return result.response.text();
     },
     fallbackOptions
@@ -187,7 +192,7 @@ export const runParsingModel = async (
   ];
   return generateWithRetryAndFallback(modelsToTry, async (model) => {
     const result = await model.generateContent(prompt);
-    recordGeminiSuccess(metricKind, userId, result.response.usageMetadata);
+    recordGeminiSuccess(metricKind, userId, result.response.usageMetadata, model.model);
     return result.response.text();
   });
 };
@@ -391,7 +396,7 @@ Return JSON array of expenses:`;
 
     const responseText = await generateWithRetryAndFallback(modelsToTry, async (model) => {
       const result = await model.generateContent(userPrompt);
-      recordGeminiSuccess(metricKind, userId, result.response.usageMetadata);
+      recordGeminiSuccess(metricKind, userId, result.response.usageMetadata, model.model);
       return result.response.text();
     });
 
@@ -477,7 +482,7 @@ Rules:
 
     const rawText = await generateWithRetryAndFallback(modelsToTry, async (model) => {
       const result = await model.generateContent(prompt);
-      recordGeminiSuccess('budget_category', userId, result.response.usageMetadata);
+      recordGeminiSuccess('budget_category', userId, result.response.usageMetadata, model.model);
       return result.response.text();
     });
 
@@ -550,7 +555,7 @@ Return JSON:
 
     const rawText = await generateWithRetryAndFallback(modelsToTry, async (model) => {
       const result = await model.generateContent(prompt);
-      recordGeminiSuccess('parse', userId, result.response.usageMetadata);
+      recordGeminiSuccess('parse', userId, result.response.usageMetadata, model.model);
       return result.response.text();
     });
     let jsonText = rawText.trim();
@@ -596,7 +601,11 @@ export const generateEmbedding = async (text: string, userId?: string): Promise<
       void recordAiUsage('embedding');
       if (userId) {
         const estTokens = Math.max(1, Math.ceil(input.length / 4));
-        void recordUserAiUsage(userId, 'embedding', estTokens);
+        void recordUserAiUsage(userId, 'embedding', {
+          model: EMBEDDING_MODEL,
+          inputTokens: estTokens,
+          outputTokens: 0,
+        });
       }
       return values as number[];
     } catch (error: any) {
@@ -648,7 +657,7 @@ Return as JSON array of strings:
 
     const rawText = await generateWithRetryAndFallback(modelsToTry, async (model) => {
       const result = await model.generateContent(prompt);
-      recordGeminiSuccess('insights', userId, result.response.usageMetadata);
+      recordGeminiSuccess('insights', userId, result.response.usageMetadata, model.model);
       return result.response.text();
     });
     let jsonText = rawText.trim();
@@ -695,7 +704,7 @@ OUTPUT RULES:
       { inlineData: { data: imageBase64, mimeType } },
       prompt,
     ]);
-    recordGeminiSuccess('ocr', userId, result.response.usageMetadata);
+    recordGeminiSuccess('ocr', userId, result.response.usageMetadata, model.model);
     return result.response.text();
   });
 
@@ -733,7 +742,7 @@ OUTPUT RULES:
       { inlineData: { data: fileBase64, mimeType } },
       prompt,
     ]);
-    recordGeminiSuccess('ocr', userId, result.response.usageMetadata);
+    recordGeminiSuccess('ocr', userId, result.response.usageMetadata, model.model);
     return result.response.text();
   });
 

@@ -28,6 +28,8 @@ model User {
   suspendedAt           DateTime?
   bannedAt              DateTime?
   moderationNote        String?
+  /// Last authenticated API request (throttled to ~hourly; not bumped by updatedAt)
+  lastActiveAt          DateTime?
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
 
@@ -44,6 +46,30 @@ model User {
   @@index([email])
 }
 
+/// Anonymous record of a deleted account, kept for churn/retention metrics. No email or name.
+model DeletedAccount {
+  id                    String    @id @default(uuid())
+  /// Former User.id (opaque; links to BillingWebhookEvent.appUserId)
+  userId                String
+  signupAt              DateTime
+  deletedAt             DateTime  @default(now())
+  reason                String    // self_delete
+  currency              String?
+  wasPremium            Boolean
+  subscriptionStatus    String?
+  subscriptionProductId String?
+  subscriptionStore     String?
+  premiumSince          DateTime?
+  lastActiveAt          DateTime?
+  lastExpenseAt         DateTime?
+  expenseCount          Int
+  aiCalls               Int       @default(0)
+  aiCostUsd             Float     @default(0)
+
+  @@index([deletedAt])
+  @@index([signupAt])
+}
+
 /// Console operators (separate from app User accounts).
 model Admin {
   id           String    @id @default(uuid())
@@ -56,8 +82,32 @@ model Admin {
   updatedAt    DateTime  @updatedAt
 
   auditLogs AdminAuditLog[]
+  sessions  AdminSession[]
 
   @@index([email])
+}
+
+/// Admin console login session. Holds the current (hashed) rotating refresh token.
+model AdminSession {
+  id            String    @id @default(uuid())
+  adminId       String
+  admin         Admin     @relation(fields: [adminId], references: [id], onDelete: Cascade)
+  /// sha256 of the current refresh token
+  tokenHash     String    @unique
+  /// sha256 of the refresh token it replaced — presenting it again means the token leaked
+  prevTokenHash String?   @unique
+  /// Admin.tokenVersion at login; bumping the admin's version kills the session
+  tokenVersion  Int
+  expiresAt     DateTime
+  lastUsedAt    DateTime  @default(now())
+  rotatedAt     DateTime?
+  revokedAt     DateTime?
+  revokedReason String?
+  ipAddress     String?
+  userAgent     String?
+  createdAt     DateTime  @default(now())
+
+  @@index([adminId])
 }
 
 /// RevenueCat webhook deliveries (for admin billing ops).
@@ -71,6 +121,19 @@ model BillingWebhookEvent {
   productId       String?
   store           String?
   outcome         String   // processed | duplicate | unmapped | ignored | error
+  /// Revenue fields from the RevenueCat event (null on duplicates and pre-capture rows)
+  priceUsd        Float?   // negative for refunds
+  priceLocal      Float?
+  currency        String?
+  periodType      String?  // TRIAL | INTRO | NORMAL | PROMOTIONAL | PREPAID
+  purchasedAt     DateTime?
+  expiresAt       DateTime?
+  cancelReason    String?  // also holds expiration_reason on EXPIRATION
+  environment     String?  // SANDBOX | PRODUCTION
+  countryCode     String?
+  transactionId   String?
+  /// Raw event (subscriber_attributes stripped) so future metrics can be backfilled
+  payload         Json?
   createdAt       DateTime @default(now())
 
   @@index([createdAt])

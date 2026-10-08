@@ -89,6 +89,9 @@ jobs:
             git checkout main
             git pull --ff-only origin main
             pnpm install --frozen-lockfile
+            # Apply committed migrations only (never db push / migrate reset here).
+            # Fails the deploy — leaving the running server untouched — if prod can't migrate.
+            pnpm exec prisma migrate deploy
             pnpm prisma generate
             pnpm build
             if command -v pm2 >/dev/null 2>&1; then
