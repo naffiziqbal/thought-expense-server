@@ -24,6 +24,11 @@ const DEFAULT_PRICING: Record<string, ModelPrice> = {
   'gemini-3.7-flash': { input: 0.75, output: 3.75 },
   'gemini-3.8-flash': { input: 0.75, output: 3.75 },
   'gemini-3-flash-preview': { input: 0.5, output: 3 },
+  'gemini-3.5-flash-lite': { input: 0.3, output: 2.5 },
+  'gemini-3.1-flash-lite': { input: 0.25, output: 1.5 },
+  'gemini-2.5-flash-lite': { input: 0.1, output: 0.4 },
+  // Currently served by gemini-3.5-flash-lite.
+  'gemini-flash-lite-latest': { input: 0.3, output: 2.5 },
   // Alias that tracks the newest Flash release — priced like the current 3.x Flash.
   'gemini-flash-latest': { input: 0.75, output: 3.75 },
   'gemini-embedding-001': { input: 0.15, output: 0 },

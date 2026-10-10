@@ -245,7 +245,7 @@ function addStats(into: AiUsageStats, from: AiUsageStats): void {
  * Tokens recorded before the input/output split existed have no cost attached.
  * Estimate them at the default parsing model with a typical 85/15 input/output mix.
  */
-const LEGACY_MODEL = process.env.PARSING_MODEL || 'gemini-2.5-flash';
+const LEGACY_MODEL = process.env.PARSING_MODEL || 'gemini-flash-latest';
 const LEGACY_EMBEDDING_MODEL = process.env.EMBEDDING_MODEL || 'gemini-embedding-001';
 
 function legacyCostUsd(kind: string, tokens: number): number {

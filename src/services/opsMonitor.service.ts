@@ -10,6 +10,7 @@ import { briefingQueue, BRIEFING_QUEUE } from '../queues/briefing.queue';
 import { recurringQueue, RECURRING_QUEUE } from '../queues/recurring.queue';
 import { findBillingDriftUsers } from './admin.service';
 import { getAiHealthToday } from './aiMetrics.service';
+import { probeGeminiModels } from './gemini.service';
 import { readLastBackupSuccess } from './backupStorage.service';
 import { setAlertState, type AlertMessage } from './alerts.service';
 import { getRedisClient } from '../config/redis';
@@ -144,12 +145,45 @@ async function checkAi(): Promise<CheckResult[]> {
         severity: 'warning',
         title: 'Gemini falling back often',
         lines: [
-          `${ai.fallbacks} fallbacks / ${ai.calls} calls today (${Math.round(ratio * 100)}%).`,
-          'Primary model or key may be rate-limited or down.',
+          `${ai.fallbacks} of ${ai.calls} calls today (${Math.round(ratio * 100)}%) weren't served by the primary model/key.`,
+          'Check the server log for "rate-limited" (quota) or "unavailable" (retired model).',
         ],
       },
     },
   ];
+}
+
+const MODEL_PROBE_KEY = 'ops:ai_models';
+const MODEL_PROBE_EVERY_MS = 60 * 60 * 1000;
+
+/** Retired models silently turn every call into a fallback chain — catch them directly. Probed hourly. */
+async function checkAiModels(): Promise<CheckResult> {
+  const client = getRedisClient();
+  type Probe = Awaited<ReturnType<typeof probeGeminiModels>>;
+  let probe: Probe | null = null;
+  const cached = await client.get(MODEL_PROBE_KEY);
+  if (cached) {
+    const { at, results } = JSON.parse(cached) as { at: number; results: Probe };
+    if (Date.now() - at < MODEL_PROBE_EVERY_MS) probe = results;
+  }
+  if (!probe) {
+    probe = await probeGeminiModels();
+    await client.set(MODEL_PROBE_KEY, JSON.stringify({ at: Date.now(), results: probe }));
+  }
+
+  const gone = probe.filter((p) => !p.ok);
+  return {
+    key: 'ai_models',
+    firing: gone.length > 0,
+    message: {
+      severity: 'critical',
+      title: 'Gemini model retired or missing',
+      lines: [
+        ...gone.map((g) => `${g.model} (${g.label} key)`),
+        'Update PARSING_MODEL / INSIGHTS_MODEL / GEMINI_FALLBACK_MODELS / GEMINI_BACKUP_MODELS.',
+      ],
+    },
+  };
 }
 
 async function checkQueues(): Promise<CheckResult[]> {
@@ -255,6 +289,7 @@ export async function runOpsChecks(): Promise<CheckResult[]> {
     safely('webhook_unmapped', checkUnmappedWebhooks),
     safely('billing_drift', checkBillingDrift),
     safely('ai', checkAi),
+    safely('ai_models', checkAiModels),
     safely('queues', checkQueues),
     safely('backup', checkBackup),
   ]);
@@ -265,7 +300,15 @@ export async function runOpsChecks(): Promise<CheckResult[]> {
     else if (r) results.push(r);
   }
   // Clear any previous "check failed" alert for checks that ran fine this time.
-  const names = ['webhook_errors', 'webhook_unmapped', 'billing_drift', 'ai', 'queues', 'backup'];
+  const names = [
+    'webhook_errors',
+    'webhook_unmapped',
+    'billing_drift',
+    'ai',
+    'ai_models',
+    'queues',
+    'backup',
+  ];
   for (const name of names) {
     const key = `check_error:${name}`;
     if (!results.some((r) => r.key === key)) {

@@ -13,30 +13,66 @@ import {
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || '');
 
 // Optional backup key used when the primary key is rate-limited or failing.
-// The backup key belongs to a newer Google AI project, where the older model
-// generations (2.5/2.0/1.5) are not served — it needs its own model list.
 const backupAI = process.env.GEMINI_API_KEY_BACKUP
   ? new GoogleGenerativeAI(process.env.GEMINI_API_KEY_BACKUP)
   : null;
 
-// Model configuration from environment variables
-const PARSING_MODEL = process.env.PARSING_MODEL || 'gemini-2.5-flash';
-const INSIGHTS_MODEL = process.env.INSIGHTS_MODEL || 'gemini-2.5-flash';
+const modelList = (raw: string | undefined, fallback: string): string[] =>
+  (raw || fallback)
+    .split(',')
+    .map((m) => m.trim())
+    .filter(Boolean);
 
-// Fallback models when primary returns 503 / high demand.
-// Keep this list to currently available Gemini models for generateContent.
-const PARSING_FALLBACK_MODELS = (
-  process.env.PARSING_FALLBACK_MODELS || 'gemini-2.0-flash,gemini-1.5-flash'
-)
-  .split(',')
-  .map((m) => m.trim())
-  .filter(Boolean);
+// `-latest` aliases never retire (Google repoints them), so they make the safest primary.
+const PARSING_MODEL = process.env.PARSING_MODEL || 'gemini-flash-latest';
+const INSIGHTS_MODEL = process.env.INSIGHTS_MODEL || 'gemini-flash-latest';
 
-// Avoid gemini-3.6-flash as default backup — free tier is ~5 RPM / ~20 RPD per model.
-const BACKUP_MODELS = (process.env.GEMINI_BACKUP_MODELS || 'gemini-flash-latest,gemini-2.0-flash')
-  .split(',')
-  .map((m) => m.trim())
-  .filter(Boolean);
+// Tried in order when the primary model fails (503 / overloaded). Pick models with their
+// own capacity: some names are aliases of each other (3.7-flash is served by 3.8-flash),
+// and falling back to an alias of the primary achieves nothing. The ops monitor alerts
+// when any of these is retired.
+const FALLBACK_MODELS = modelList(
+  process.env.GEMINI_FALLBACK_MODELS || process.env.PARSING_FALLBACK_MODELS,
+  'gemini-3.6-flash,gemini-flash-lite-latest'
+);
+
+const BACKUP_MODELS = modelList(
+  process.env.GEMINI_BACKUP_MODELS,
+  'gemini-flash-latest,gemini-flash-lite-latest'
+);
+
+/** Every model this service may call, per key — used by the ops monitor's retirement check. */
+export function configuredGeminiModels(): Array<{ label: 'primary' | 'backup'; model: string }> {
+  const primary = [...new Set([PARSING_MODEL, INSIGHTS_MODEL, ...FALLBACK_MODELS])];
+  return [
+    ...primary.map((model) => ({ label: 'primary' as const, model })),
+    ...(backupAI ? BACKUP_MODELS.map((model) => ({ label: 'backup' as const, model })) : []),
+  ];
+}
+
+/**
+ * Check each configured model with countTokens — free, and unlike models.get it
+ * returns 404 for retired models.
+ */
+export async function probeGeminiModels(): Promise<
+  Array<{ label: 'primary' | 'backup'; model: string; ok: boolean; error?: string }>
+> {
+  return Promise.all(
+    configuredGeminiModels().map(async ({ label, model }) => {
+      const client = label === 'primary' ? genAI : backupAI!;
+      try {
+        await client.getGenerativeModel({ model }).countTokens('ping');
+        return { label, model, ok: true };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        // Only a missing model is a config problem; rate limits etc. are someone else's alert.
+        return isModelGoneError(err)
+          ? { label, model, ok: false, error: message.slice(0, 160) }
+          : { label, model, ok: true };
+      }
+    })
+  );
+}
 
 export function isRetryableError(error: unknown): boolean {
   const msg = error instanceof Error ? error.message : String(error);
@@ -44,6 +80,21 @@ export function isRetryableError(error: unknown): boolean {
     /503|429|500|502|504/.test(msg) ||
     /Service Unavailable|high demand|overloaded|rate limit|temporarily/i.test(msg)
   );
+}
+
+/** Model retired or misspelled — retrying or waiting won't help. */
+export function isModelGoneError(error: unknown): boolean {
+  const msg = error instanceof Error ? error.message : String(error);
+  return /\[404|NOT_FOUND|no longer available|is not found for API version/i.test(msg);
+}
+
+/** `label/model` → retry after (ms). Skips models we know are gone instead of paying a round-trip each call. */
+const goneModels = new Map<string, number>();
+const GONE_TTL_MS = 60 * 60 * 1000;
+
+function isGone(label: string, model: string): boolean {
+  const until = goneModels.get(`${label}/${model}`);
+  return until !== undefined && until > Date.now();
 }
 
 function isQuotaError(error: unknown): boolean {
@@ -78,7 +129,9 @@ function buildAttempts(primaryModels: string[], options?: GeminiFallbackOptions)
       attempts.push({ client: backupAI, model, label: 'backup' });
     }
   }
-  return attempts;
+  const live = attempts.filter((a) => !isGone(a.label, a.model));
+  // If everything is marked gone, try anyway rather than fail without a request.
+  return live.length > 0 ? live : attempts;
 }
 
 export async function generateWithRetryAndFallback<T>(
@@ -94,9 +147,22 @@ export async function generateWithRetryAndFallback<T>(
     const { client, model, label } = attempts[i];
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       try {
-        return await fn(client.getGenerativeModel({ model }));
+        const result = await fn(client.getGenerativeModel({ model }));
+        // One fallback per call that the primary model on the primary key didn't serve.
+        if (label !== 'primary' || model !== models[0]) void recordAiFallback();
+        return result;
       } catch (err) {
         lastError = err;
+        if (isModelGoneError(err)) {
+          if (!isGone(label, model)) {
+            logger.error(
+              { label, model },
+              'Gemini model unavailable (retired or misspelled) — fix the model config'
+            );
+          }
+          goneModels.set(`${label}/${model}`, Date.now() + GONE_TTL_MS);
+          break;
+        }
         if (isQuotaError(err)) {
           // A quota/rate-limit error affects the key, not the model — skip the
           // rest of this key's models and move straight to the next key.
@@ -114,7 +180,6 @@ export async function generateWithRetryAndFallback<T>(
       }
     }
     if (i < attempts.length - 1) {
-      void recordAiFallback();
       logger.warn(
         { from: `${label}/${model}`, to: `${attempts[i + 1].label}/${attempts[i + 1].model}` },
         'Switching Gemini model after failure'
@@ -122,6 +187,7 @@ export async function generateWithRetryAndFallback<T>(
     }
   }
 
+  void recordAiFallback();
   throw lastError;
 }
 
@@ -165,8 +231,7 @@ export const runInsightsModel = async (
   fallbackOptions?: GeminiFallbackOptions,
   userId?: string
 ): Promise<string> => {
-  const fallbacks = ['gemini-2.0-flash', 'gemini-1.5-flash', 'gemini-1.5-pro'];
-  const modelsToTry = [INSIGHTS_MODEL, ...fallbacks.filter((m) => m !== INSIGHTS_MODEL)];
+  const modelsToTry = [INSIGHTS_MODEL, ...FALLBACK_MODELS.filter((m) => m !== INSIGHTS_MODEL)];
   return generateWithRetryAndFallback(
     modelsToTry,
     async (model) => {
@@ -186,10 +251,7 @@ export const runParsingModel = async (
   metricKind: AiMetricKind = 'parse',
   userId?: string
 ): Promise<string> => {
-  const modelsToTry = [
-    PARSING_MODEL,
-    ...PARSING_FALLBACK_MODELS.filter((m) => m !== PARSING_MODEL),
-  ];
+  const modelsToTry = [PARSING_MODEL, ...FALLBACK_MODELS.filter((m) => m !== PARSING_MODEL)];
   return generateWithRetryAndFallback(modelsToTry, async (model) => {
     const result = await model.generateContent(prompt);
     recordGeminiSuccess(metricKind, userId, result.response.usageMetadata, model.model);
@@ -389,10 +451,7 @@ REMEMBER:
 
 Return JSON array of expenses:`;
 
-    const modelsToTry = [
-      PARSING_MODEL,
-      ...PARSING_FALLBACK_MODELS.filter((m) => m !== PARSING_MODEL),
-    ];
+    const modelsToTry = [PARSING_MODEL, ...FALLBACK_MODELS.filter((m) => m !== PARSING_MODEL)];
 
     const responseText = await generateWithRetryAndFallback(modelsToTry, async (model) => {
       const result = await model.generateContent(userPrompt);
@@ -475,10 +534,7 @@ Rules:
 - Ignore unrelated text.
 `;
 
-    const modelsToTry = [
-      PARSING_MODEL,
-      ...PARSING_FALLBACK_MODELS.filter((m) => m !== PARSING_MODEL),
-    ];
+    const modelsToTry = [PARSING_MODEL, ...FALLBACK_MODELS.filter((m) => m !== PARSING_MODEL)];
 
     const rawText = await generateWithRetryAndFallback(modelsToTry, async (model) => {
       const result = await model.generateContent(prompt);
@@ -548,10 +604,7 @@ Return JSON:
   "alternatives": ["Alternative 1", "Alternative 2"]
 }`;
 
-    const modelsToTry = [
-      PARSING_MODEL,
-      ...PARSING_FALLBACK_MODELS.filter((m) => m !== PARSING_MODEL),
-    ];
+    const modelsToTry = [PARSING_MODEL, ...FALLBACK_MODELS.filter((m) => m !== PARSING_MODEL)];
 
     const rawText = await generateWithRetryAndFallback(modelsToTry, async (model) => {
       const result = await model.generateContent(prompt);
@@ -652,8 +705,7 @@ and include at least one concrete, realistic saving opportunity when the data su
 Return as JSON array of strings:
 ["Insight 1", "Insight 2", "Insight 3"]`;
 
-    const insightFallbacks = ['gemini-2.0-flash', 'gemini-1.5-flash', 'gemini-1.5-pro'];
-    const modelsToTry = [INSIGHTS_MODEL, ...insightFallbacks.filter((m) => m !== INSIGHTS_MODEL)];
+    const modelsToTry = [INSIGHTS_MODEL, ...FALLBACK_MODELS.filter((m) => m !== INSIGHTS_MODEL)];
 
     const rawText = await generateWithRetryAndFallback(modelsToTry, async (model) => {
       const result = await model.generateContent(prompt);
@@ -694,10 +746,7 @@ OUTPUT RULES:
   If only a grand total is readable, output one line: "<store name> <total>"
 - If the image contains no readable expenses, output exactly: NONE`;
 
-  const modelsToTry = [
-    PARSING_MODEL,
-    ...PARSING_FALLBACK_MODELS.filter((m) => m !== PARSING_MODEL),
-  ];
+  const modelsToTry = [PARSING_MODEL, ...FALLBACK_MODELS.filter((m) => m !== PARSING_MODEL)];
 
   const text = await generateWithRetryAndFallback(modelsToTry, async (model) => {
     const result = await model.generateContent([
@@ -732,10 +781,7 @@ OUTPUT RULES:
 - If the document is a table, emit one line per row
 - If nothing is readable, output exactly: NONE`;
 
-  const modelsToTry = [
-    PARSING_MODEL,
-    ...PARSING_FALLBACK_MODELS.filter((m) => m !== PARSING_MODEL),
-  ];
+  const modelsToTry = [PARSING_MODEL, ...FALLBACK_MODELS.filter((m) => m !== PARSING_MODEL)];
 
   const text = await generateWithRetryAndFallback(modelsToTry, async (model) => {
     const result = await model.generateContent([
