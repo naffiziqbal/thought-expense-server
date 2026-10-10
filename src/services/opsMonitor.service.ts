@@ -164,7 +164,9 @@ async function checkAiModels(): Promise<CheckResult> {
   const cached = await client.get(MODEL_PROBE_KEY);
   if (cached) {
     const { at, results } = JSON.parse(cached) as { at: number; results: Probe };
-    if (Date.now() - at < MODEL_PROBE_EVERY_MS) probe = results;
+    // Ignore entries cached by an older deploy whose probe shape lacked `sources`.
+    const current = Array.isArray(results) && results.every((r) => Array.isArray(r?.sources));
+    if (current && Date.now() - at < MODEL_PROBE_EVERY_MS) probe = results;
   }
   if (!probe) {
     probe = await probeGeminiModels();
