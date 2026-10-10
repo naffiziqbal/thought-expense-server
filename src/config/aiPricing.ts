@@ -21,7 +21,7 @@ const DEFAULT_PRICING: Record<string, ModelPrice> = {
   'gemini-1.5-pro': { input: 1.25, output: 5 },
   'gemini-3.5-flash': { input: 1.5, output: 9 },
   'gemini-3.6-flash': { input: 0.75, output: 3.75 },
-  'gemini-3.7-flash': { input: 0.75, output: 3.75 },
+  'gemini-3.7-flash': { input: 0.75, output: 3.75 }, // deprecated; Google redirects it to 3.8-flash
   'gemini-3.8-flash': { input: 0.75, output: 3.75 },
   'gemini-3-flash-preview': { input: 0.5, output: 3 },
   'gemini-3.5-flash-lite': { input: 0.3, output: 2.5 },

@@ -28,7 +28,7 @@ const PARSING_MODEL = process.env.PARSING_MODEL || 'gemini-flash-latest';
 const INSIGHTS_MODEL = process.env.INSIGHTS_MODEL || 'gemini-flash-latest';
 
 // Tried in order when the primary model fails (503 / overloaded). Pick models with their
-// own capacity: some names are aliases of each other (3.7-flash is served by 3.8-flash),
+// own capacity: some names are aliases of each other (3.7-flash is deprecated and redirected to 3.8-flash),
 // and falling back to an alias of the primary achieves nothing. The ops monitor alerts
 // when any of these is retired.
 const FALLBACK_MODELS = modelList(
@@ -41,13 +41,56 @@ const BACKUP_MODELS = modelList(
   'gemini-flash-latest,gemini-flash-lite-latest'
 );
 
+export interface ConfiguredModel {
+  label: 'primary' | 'backup';
+  model: string;
+  /** Env var(s) that put it there, or "default" — so an alert can say exactly what to change. */
+  sources: string[];
+}
+
 /** Every model this service may call, per key — used by the ops monitor's retirement check. */
-export function configuredGeminiModels(): Array<{ label: 'primary' | 'backup'; model: string }> {
-  const primary = [...new Set([PARSING_MODEL, INSIGHTS_MODEL, ...FALLBACK_MODELS])];
-  return [
-    ...primary.map((model) => ({ label: 'primary' as const, model })),
-    ...(backupAI ? BACKUP_MODELS.map((model) => ({ label: 'backup' as const, model })) : []),
+export function configuredGeminiModels(): ConfiguredModel[] {
+  const fallbackVar = process.env.GEMINI_FALLBACK_MODELS
+    ? 'GEMINI_FALLBACK_MODELS'
+    : process.env.PARSING_FALLBACK_MODELS
+      ? 'PARSING_FALLBACK_MODELS'
+      : 'default fallbacks';
+  const entries: Array<[ConfiguredModel['label'], string, string]> = [
+    [
+      'primary',
+      PARSING_MODEL,
+      process.env.PARSING_MODEL ? 'PARSING_MODEL' : 'default PARSING_MODEL',
+    ],
+    [
+      'primary',
+      INSIGHTS_MODEL,
+      process.env.INSIGHTS_MODEL ? 'INSIGHTS_MODEL' : 'default INSIGHTS_MODEL',
+    ],
+    ...FALLBACK_MODELS.map((m): [ConfiguredModel['label'], string, string] => [
+      'primary',
+      m,
+      fallbackVar,
+    ]),
+    ...(backupAI
+      ? BACKUP_MODELS.map((m): [ConfiguredModel['label'], string, string] => [
+          'backup',
+          m,
+          process.env.GEMINI_BACKUP_MODELS ? 'GEMINI_BACKUP_MODELS' : 'default backup models',
+        ])
+      : []),
   ];
+
+  const merged = new Map<string, ConfiguredModel>();
+  for (const [label, model, source] of entries) {
+    const key = `${label}/${model}`;
+    const existing = merged.get(key);
+    if (existing) {
+      if (!existing.sources.includes(source)) existing.sources.push(source);
+    } else {
+      merged.set(key, { label, model, sources: [source] });
+    }
+  }
+  return [...merged.values()];
 }
 
 /**
@@ -55,20 +98,20 @@ export function configuredGeminiModels(): Array<{ label: 'primary' | 'backup'; m
  * returns 404 for retired models.
  */
 export async function probeGeminiModels(): Promise<
-  Array<{ label: 'primary' | 'backup'; model: string; ok: boolean; error?: string }>
+  Array<ConfiguredModel & { ok: boolean; error?: string }>
 > {
   return Promise.all(
-    configuredGeminiModels().map(async ({ label, model }) => {
-      const client = label === 'primary' ? genAI : backupAI!;
+    configuredGeminiModels().map(async (entry) => {
+      const client = entry.label === 'primary' ? genAI : backupAI!;
       try {
-        await client.getGenerativeModel({ model }).countTokens('ping');
-        return { label, model, ok: true };
+        await client.getGenerativeModel({ model: entry.model }).countTokens('ping');
+        return { ...entry, ok: true };
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         // Only a missing model is a config problem; rate limits etc. are someone else's alert.
         return isModelGoneError(err)
-          ? { label, model, ok: false, error: message.slice(0, 160) }
-          : { label, model, ok: true };
+          ? { ...entry, ok: false, error: message.slice(0, 160) }
+          : { ...entry, ok: true };
       }
     })
   );

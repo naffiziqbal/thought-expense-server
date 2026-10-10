@@ -172,15 +172,25 @@ async function checkAiModels(): Promise<CheckResult> {
   }
 
   const gone = probe.filter((p) => !p.ok);
+  // Calls still succeed while each key has a live model (gemini.service skips gone ones), so a
+  // retired entry is config hygiene, not an outage — unless a key has nothing left to serve.
+  const keyDown = (['primary', 'backup'] as const).some((label) => {
+    const forKey = probe!.filter((p) => p.label === label);
+    return forKey.length > 0 && forKey.every((p) => !p.ok);
+  });
   return {
     key: 'ai_models',
     firing: gone.length > 0,
     message: {
-      severity: 'critical',
-      title: 'Gemini model retired or missing',
+      severity: keyDown ? 'critical' : 'warning',
+      title: keyDown
+        ? 'Gemini unavailable — no working model'
+        : 'Gemini model retired — update config',
       lines: [
-        ...gone.map((g) => `${g.model} (${g.label} key)`),
-        'Update PARSING_MODEL / INSIGHTS_MODEL / GEMINI_FALLBACK_MODELS / GEMINI_BACKUP_MODELS.',
+        ...gone.map((g) => `${g.model} (${g.label} key) — set in ${g.sources.join(', ')}`),
+        keyDown
+          ? 'AI features are failing. Point the variables above at gemini-flash-latest and restart.'
+          : 'AI still works via fallbacks. Remove or replace it in the server .env and restart.',
       ],
     },
   };
