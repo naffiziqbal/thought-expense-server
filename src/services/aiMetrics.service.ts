@@ -435,3 +435,77 @@ export async function getUserAiUsageSummary(
 
   return { days, totals, byKind, byModel, series, lifetime, monthly, pricing: AI_PRICING };
 }
+
+export type TopAiUsersPeriod = 'month' | 'prev_month' | 'all';
+export type TopAiUsersSort = 'cost' | 'tokens';
+
+export interface TopAiUserRow {
+  userId: string;
+  calls: number;
+  inputTokens: number;
+  outputTokens: number;
+  tokens: number;
+  costUsd: number;
+  /** Feature that cost the most (monthly periods only — the lifetime hash has no per-kind split). */
+  topKind: string | null;
+}
+
+/**
+ * Heaviest AI users from the permanent per-user rollups (monthly or lifetime hashes).
+ * SCANs the keyspace — one hash per user, fine at this app's scale.
+ */
+export async function getTopAiUsers(
+  period: TopAiUsersPeriod,
+  sort: TopAiUsersSort,
+  limit: number
+): Promise<{ period: TopAiUsersPeriod; month: string | null; rows: TopAiUserRow[] }> {
+  const prefix = 'metrics:ai:u:';
+  let month: string | null = null;
+  let suffix = ':all';
+  if (period !== 'all') {
+    const d = new Date();
+    d.setUTCDate(1);
+    if (period === 'prev_month') d.setUTCMonth(d.getUTCMonth() - 1);
+    month = monthKey(d);
+    suffix = `:m:${month}`;
+  }
+
+  const client = getRedisClient();
+  const keys: string[] = [];
+  for await (const key of client.scanIterator({ MATCH: `${prefix}*${suffix}`, COUNT: 500 })) {
+    keys.push(String(key));
+  }
+  if (keys.length === 0) return { period, month, rows: [] };
+
+  const multi = client.multi();
+  for (const key of keys) multi.hGetAll(key);
+  const hashes = (await multi.exec()) as unknown as Array<Record<string, string>>;
+
+  const rows = keys.map((key, i): TopAiUserRow => {
+    const raw = hashes[i] ?? {};
+    const int = (field: string) => parseInt(raw[field] ?? '0', 10) || 0;
+    let topKind: string | null = null;
+    let topCost = 0;
+    for (const kind of AI_METRIC_KINDS) {
+      const cost = int(`${kind}:cost`);
+      if (cost > topCost) {
+        topCost = cost;
+        topKind = kind;
+      }
+    }
+    const inputTokens = int('in');
+    const outputTokens = int('out');
+    return {
+      userId: key.slice(prefix.length, -suffix.length),
+      calls: int('calls'),
+      inputTokens,
+      outputTokens,
+      tokens: inputTokens + outputTokens,
+      costUsd: int('cost') / NANO_USD,
+      topKind,
+    };
+  });
+
+  rows.sort((a, b) => (sort === 'tokens' ? b.tokens - a.tokens : b.costUsd - a.costUsd));
+  return { period, month, rows: rows.filter((r) => r.calls > 0).slice(0, limit) };
+}

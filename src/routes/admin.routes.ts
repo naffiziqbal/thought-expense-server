@@ -10,6 +10,7 @@ import {
 import { loginLimiter } from '../middleware/rateLimit';
 import {
   getAiUsage,
+  getTopAiUsersHandler,
   getUserAiUsage,
   getAuditLogs,
   getBillingDrift,
@@ -58,6 +59,7 @@ router.get('/system/backups', getSystemBackups);
 router.post('/system/backups/link', postBackupDownloadLink);
 router.post('/system/alerts/test', postTestAlert);
 router.get('/ai/usage', getAiUsage);
+router.get('/ai/top-users', getTopAiUsersHandler);
 router.get('/queues', getQueueMonitor);
 router.get('/rag/health', getRagHealth);
 router.get('/integrations/revenuecat', getRevenueCatSync);
