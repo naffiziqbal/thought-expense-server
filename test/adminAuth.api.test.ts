@@ -126,6 +126,6 @@ describe('admin sessions', () => {
     const res = await request(app)
       .post('/api/admin/auth/refresh')
       .send({ refreshToken: s.refreshToken });
-    expect(res.status).toBe(401);
+    expect(res.status, JSON.stringify(res.body)).toBe(401);
   });
 });

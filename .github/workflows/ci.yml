@@ -28,11 +28,23 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
+      # Sign-in and password-reset limits count attempts in Redis and refuse to
+      # run without it, so their tests need a real instance.
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
 
     env:
       NODE_ENV: test
       LOG_LEVEL: silent
       DATABASE_URL: postgresql://thoughtexpense:password@localhost:5432/thoughtexpense?schema=public
+      REDIS_URL: redis://127.0.0.1:6379
       JWT_SECRET: ci-test-secret-not-for-production
       JWT_EXPIRES_IN: 7d
       REVENUECAT_WEBHOOK_AUTH: ci-webhook-auth
