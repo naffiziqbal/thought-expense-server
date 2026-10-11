@@ -17,11 +17,10 @@ import {
 import { applyUserModeration, type ModerationAction } from '../services/userModeration.service';
 import {
   getAiUsageSeries,
-  getTopAiUsers,
   getUserAiUsageSummary,
   type TopAiUsersPeriod,
 } from '../services/aiMetrics.service';
-import prisma from '../config/prisma';
+import { getAiMarginReport, type AiMarginSort } from '../services/aiMargin.service';
 import {
   getDatabaseHealth,
   getDeployInfo,
@@ -350,24 +349,12 @@ export const getTopAiUsersHandler = asyncHandler(async (req: AdminAuthRequest, r
   const period: TopAiUsersPeriod = ['month', 'prev_month', 'all'].includes(String(req.query.period))
     ? (req.query.period as TopAiUsersPeriod)
     : 'month';
-  const sort = req.query.sort === 'tokens' ? 'tokens' : 'cost';
+  const sort: AiMarginSort = ['tokens', 'margin'].includes(String(req.query.sort))
+    ? (req.query.sort as AiMarginSort)
+    : 'cost';
   const limit = Math.min(100, Math.max(5, parseInt(String(req.query.limit || '20'), 10) || 20));
-  const top = await getTopAiUsers(period, sort, limit);
-
-  const users = await prisma.user.findMany({
-    where: { id: { in: top.rows.map((r) => r.userId) } },
-    select: { id: true, email: true, name: true, isPremium: true },
-  });
-  const byId = new Map(users.map((u) => [u.id, u]));
-  res.json({
-    success: true,
-    data: {
-      ...top,
-      sort,
-      // Deleted accounts keep their usage rollups, so the user can be missing.
-      rows: top.rows.map((r) => ({ ...r, user: byId.get(r.userId) ?? null })),
-    },
-  });
+  const data = await getAiMarginReport(period, sort, limit);
+  res.json({ success: true, data });
 });
 
 export const getUserAiUsage = asyncHandler(

@@ -10,6 +10,7 @@ import { briefingQueue, BRIEFING_QUEUE } from '../queues/briefing.queue';
 import { recurringQueue, RECURRING_QUEUE } from '../queues/recurring.queue';
 import { findBillingDriftUsers } from './admin.service';
 import { getAiHealthToday } from './aiMetrics.service';
+import { getAiMarginReport } from './aiMargin.service';
 import { probeGeminiModels } from './gemini.service';
 import { readLastBackupSuccess } from './backupStorage.service';
 import { setAlertState, type AlertMessage } from './alerts.service';
@@ -198,6 +199,32 @@ async function checkAiModels(): Promise<CheckResult> {
   };
 }
 
+const usd = (n: number) => `$${n.toFixed(2)}`;
+
+/** Users whose AI cost this month outruns what they pay (free users: over ALERT_FREE_USER_AI_USD). */
+export async function checkAiUserMargin(): Promise<CheckResult> {
+  const report = await getAiMarginReport('month', 'cost', Number.MAX_SAFE_INTEGER);
+  const flagged = report.rows.filter((r) => r.flag);
+  return {
+    key: 'ai_user_margin',
+    firing: flagged.length > 0,
+    message: {
+      severity: 'warning',
+      title: 'Users costing more AI than they pay',
+      lines: [
+        ...flagged.slice(0, 3).map((r) => {
+          const who = r.user?.email ?? `deleted ${r.userId.slice(0, 8)}`;
+          return r.flag === 'free_high_cost'
+            ? `${who} — free, ${usd(r.costUsd)} AI this month`
+            : `${who} — ${usd(r.costUsd)} AI vs ${usd(r.revenueUsd)} paid this month`;
+        }),
+        ...(flagged.length > 3 ? [`…and ${flagged.length - 3} more.`] : []),
+        'Review in Admin → Operations → Top AI users.',
+      ],
+    },
+  };
+}
+
 async function checkQueues(): Promise<CheckResult[]> {
   const since = Date.now() - WINDOW_MS;
   const maxBacklog = num('ALERT_QUEUE_BACKLOG', 200);
@@ -302,6 +329,7 @@ export async function runOpsChecks(): Promise<CheckResult[]> {
     safely('billing_drift', checkBillingDrift),
     safely('ai', checkAi),
     safely('ai_models', checkAiModels),
+    safely('ai_user_margin', checkAiUserMargin),
     safely('queues', checkQueues),
     safely('backup', checkBackup),
   ]);
@@ -318,6 +346,7 @@ export async function runOpsChecks(): Promise<CheckResult[]> {
     'billing_drift',
     'ai',
     'ai_models',
+    'ai_user_margin',
     'queues',
     'backup',
   ];
