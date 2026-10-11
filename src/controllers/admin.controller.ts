@@ -218,7 +218,11 @@ export const getBillingDrift = asyncHandler(async (_req: AdminAuthRequest, res: 
 export const getAuditLogs = asyncHandler(async (req: AdminAuthRequest, res: Response) => {
   const page = Math.max(1, parseInt(String(req.query.page || '1'), 10) || 1);
   const limit = Math.min(100, Math.max(10, parseInt(String(req.query.limit || '30'), 10) || 30));
-  const data = await listAdminAuditLogs({ page, limit });
+  const action =
+    typeof req.query.action === 'string' && /^[a-z_]+\.[a-z_]+$/.test(req.query.action)
+      ? req.query.action
+      : undefined;
+  const data = await listAdminAuditLogs({ page, limit, action });
   res.json({ success: true, data });
 });
 

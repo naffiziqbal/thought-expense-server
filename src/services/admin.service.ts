@@ -544,11 +544,13 @@ export async function findBillingDriftUsers() {
   return users.map((u) => ({ ...u, reason: driftReason(u) }));
 }
 
-export async function listAdminAuditLogs(params: { page: number; limit: number }) {
-  const { page, limit } = params;
+export async function listAdminAuditLogs(params: { page: number; limit: number; action?: string }) {
+  const { page, limit, action } = params;
   const skip = (page - 1) * limit;
+  const where = action ? { action } : {};
   const [rows, total] = await Promise.all([
     prisma.adminAuditLog.findMany({
+      where,
       skip,
       take: limit,
       orderBy: { createdAt: 'desc' },
@@ -556,7 +558,7 @@ export async function listAdminAuditLogs(params: { page: number; limit: number }
         admin: { select: { id: true, email: true, name: true } },
       },
     }),
-    prisma.adminAuditLog.count(),
+    prisma.adminAuditLog.count({ where }),
   ]);
 
   const userIds = [
