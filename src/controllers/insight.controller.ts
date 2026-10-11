@@ -159,12 +159,16 @@ export const getLatestBriefing = asyncHandler(
   }
 );
 
-// @desc    Generate this week's briefing on demand (no email; view in app)
+// @desc    Generate this week's briefing on demand, or refresh it if the numbers changed (no email/push)
 // @route   POST /api/insights/briefing/generate
 // @access  Private
 export const generateBriefingNow = asyncHandler(
   async (req: AuthRequest, res: Response): Promise<void> => {
-    const result = await generateWeeklyBriefingForUser(req.user!.id, { sendEmail: false });
+    const result = await generateWeeklyBriefingForUser(req.user!.id, {
+      sendEmail: false,
+      refresh: true,
+      notify: false,
+    });
 
     if (!result.generated) {
       res.json({

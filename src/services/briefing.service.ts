@@ -56,7 +56,14 @@ export interface BriefingResult {
 
 export async function generateWeeklyBriefingForUser(
   userId: string,
-  options: { sendEmail?: boolean; includeBackupKey?: boolean } = {}
+  options: {
+    sendEmail?: boolean;
+    includeBackupKey?: boolean;
+    /** On-demand: rewrite this week's briefing when the numbers behind it have changed. */
+    refresh?: boolean;
+    /** Push "briefing ready" — pointless when the user asked for it and is looking at it. */
+    notify?: boolean;
+  } = {}
 ): Promise<BriefingResult> {
   const user = await prisma.user.findUnique({
     where: { id: userId },
@@ -86,8 +93,14 @@ export async function generateWeeklyBriefingForUser(
     orderBy: { createdAt: 'desc' },
   });
 
-  if (existing) {
-    const meta = (existing.metadata || {}) as Record<string, unknown>;
+  const meta = (existing?.metadata || {}) as Record<string, unknown>;
+  const unchanged =
+    meta.weekTotal === thisWeek.total &&
+    meta.previousWeekTotal === lastWeek.total &&
+    meta.expenseCount === thisWeek.count &&
+    meta.currency === currency;
+
+  if (existing && (!options.refresh || unchanged)) {
     let emailed = Boolean(meta.emailed);
     if (shouldSendEmail && !emailed) {
       const stored = meta.briefing as BriefingContent | undefined;
@@ -127,22 +140,34 @@ export async function generateWeeklyBriefingForUser(
     { includeBackupKey: options.includeBackupKey }
   );
 
-  const insight = await prisma.insight.create({
-    data: {
-      userId,
-      type: 'briefing',
-      content: briefing.summary,
-      metadata: {
-        briefing: briefing as any,
-        weekTotal: thisWeek.total,
-        previousWeekTotal: lastWeek.total,
-        byCategory: thisWeek.byCategory,
-        currency,
-        period: { start: weekAgo.toISOString(), end: now.toISOString() },
-        emailed: false,
+  const metadata = {
+    briefing: briefing as any,
+    weekTotal: thisWeek.total,
+    previousWeekTotal: lastWeek.total,
+    expenseCount: thisWeek.count,
+    byCategory: thisWeek.byCategory,
+    currency,
+    period: { start: weekAgo.toISOString(), end: now.toISOString() },
+    emailed: false,
+  };
+
+  if (existing) {
+    // Refreshed mid-week: one briefing per week, so update it in place. Keep the email
+    // flag — the weekly email already went out with the earlier numbers.
+    await prisma.insight.update({
+      where: { id: existing.id },
+      data: {
+        content: briefing.summary,
+        metadata: { ...metadata, emailed: Boolean(meta.emailed) },
+        period: now,
       },
-      period: now,
-    },
+    });
+    await deleteCachePattern(`insights:${userId}:*`);
+    return { generated: true, briefing, insightId: existing.id, emailed: Boolean(meta.emailed) };
+  }
+
+  const insight = await prisma.insight.create({
+    data: { userId, type: 'briefing', content: briefing.summary, metadata, period: now },
   });
 
   await deleteCachePattern(`insights:${userId}:*`);
@@ -162,25 +187,19 @@ export async function generateWeeklyBriefingForUser(
       await prisma.insight.update({
         where: { id: insight.id },
         data: {
-          metadata: {
-            briefing: briefing as any,
-            weekTotal: thisWeek.total,
-            previousWeekTotal: lastWeek.total,
-            byCategory: thisWeek.byCategory,
-            currency,
-            period: { start: weekAgo.toISOString(), end: now.toISOString() },
-            emailed: true,
-          },
+          metadata: { ...metadata, emailed: true },
         },
       });
     }
   }
 
-  void sendPushToUser(userId, {
-    title: 'Your weekly briefing is ready',
-    body: briefing.summary.slice(0, 140),
-    data: { screen: 'insights' },
-  });
+  if (options.notify !== false) {
+    void sendPushToUser(userId, {
+      title: 'Your weekly briefing is ready',
+      body: briefing.summary.slice(0, 140),
+      data: { screen: 'insights' },
+    });
+  }
 
   return { generated: true, briefing, insightId: insight.id, emailed };
 }
