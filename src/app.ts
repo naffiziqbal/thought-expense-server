@@ -6,6 +6,7 @@ import compression from 'compression';
 import * as Sentry from '@sentry/node';
 
 import { corsOptions } from './config/cors';
+import { trustProxyHops } from './config/proxy';
 import { aiRateLimit, generalRateLimit } from './middleware/rateLimit';
 import { httpLogger } from './config/logger';
 import authRoutes from './routes/auth.routes';
@@ -22,7 +23,7 @@ import { errorHandler } from './middleware/error.middleware';
 
 const app: Express = express();
 
-app.set('trust proxy', true);
+app.set('trust proxy', trustProxyHops());
 
 app.use(helmet());
 app.use(cors(corsOptions()));

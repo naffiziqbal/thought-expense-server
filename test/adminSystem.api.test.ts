@@ -3,6 +3,7 @@ import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { app } from '../src/app';
 import prisma from '../src/config/prisma';
+import { connectRedis, getRedisClient } from '../src/config/redis';
 import { isBackupKey } from '../src/services/backupStorage.service';
 import { testEmail } from './helpers';
 
@@ -10,6 +11,8 @@ let adminId: string;
 let auth: { Authorization: string };
 
 beforeAll(async () => {
+  // Admin sign-in counts failures in Redis and refuses without it.
+  await connectRedis();
   const email = testEmail('admin-system');
   const admin = await prisma.admin.create({
     data: { email, password: await bcrypt.hash('admin-secret-1', 4) },
@@ -24,6 +27,7 @@ beforeAll(async () => {
 afterAll(async () => {
   await prisma.admin.deleteMany({ where: { id: adminId } });
   await prisma.$disconnect();
+  await getRedisClient().quit();
 });
 
 describe('GET /api/admin/system/health', () => {

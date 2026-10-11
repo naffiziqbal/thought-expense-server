@@ -14,8 +14,8 @@ export const connectRedis = async (): Promise<RedisClientType> => {
             return new Error('Redis reconnection failed');
           }
           return retries * 100; // Exponential backoff
-        }
-      }
+        },
+      },
     });
 
     redisClient.on('error', (err: Error) => {
@@ -78,6 +78,28 @@ export const getCache = async <T = any>(key: string): Promise<T | null> => {
     return data ? JSON.parse(data) : null;
   } catch (error) {
     logger.error({ err: error }, 'Redis getCache error');
+    return null;
+  }
+};
+
+// INCR and set the TTL in one step, so a crash between the two can't leave a
+// counter that never expires.
+const INCR_WITH_TTL = `local n = redis.call('INCR', KEYS[1])
+if n == 1 then redis.call('EXPIRE', KEYS[1], ARGV[1]) end
+return n`;
+
+/**
+ * Atomically increment a counter that expires `ttlSeconds` after its first use.
+ * Returns the new count, or null if Redis failed: callers guarding against
+ * brute force must treat null as "refuse", not "allow".
+ */
+export const incrementCounter = async (key: string, ttlSeconds: number): Promise<number | null> => {
+  try {
+    const client = getRedisClient();
+    const n = await client.eval(INCR_WITH_TTL, { keys: [key], arguments: [String(ttlSeconds)] });
+    return typeof n === 'number' ? n : null;
+  } catch (error) {
+    logger.error({ err: error }, 'Redis incrementCounter error');
     return null;
   }
 };

@@ -4,6 +4,7 @@ import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { app } from '../src/app';
 import prisma from '../src/config/prisma';
+import { connectRedis, getRedisClient } from '../src/config/redis';
 import { testEmail } from './helpers';
 
 const password = 'admin-secret-1';
@@ -29,12 +30,15 @@ const bearer = (token: string) => ({ Authorization: `Bearer ${token}` });
 let email: string;
 
 beforeAll(async () => {
+  // Admin sign-in counts failures in Redis and refuses without it.
+  await connectRedis();
   email = (await createAdmin()).email;
 });
 
 afterAll(async () => {
   await prisma.admin.deleteMany({ where: { id: { in: adminIds } } });
   await prisma.$disconnect();
+  await getRedisClient().quit();
 });
 
 describe('admin sessions', () => {

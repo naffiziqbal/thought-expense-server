@@ -3,7 +3,8 @@
  *
  *   pnpm admin:create -- --email ops@example.com --password 'secret' --name "Ops"
  *
- * Re-run with the same email to reset password / name.
+ * Re-run with the same email to reset password / name. Then turn on
+ * two-factor sign-in: pnpm admin:totp -- --email ops@example.com
  */
 
 import 'dotenv/config';
@@ -25,12 +26,12 @@ async function main() {
     console.error('Missing --email (or ADMIN_EMAIL env)');
     process.exit(1);
   }
-  if (!password || password.length < 3) {
-    console.error('Missing --password (min 3 chars) or ADMIN_PASSWORD env');
+  // This account can download the whole database: no short passwords, even locally.
+  if (!password || password.length < 12) {
+    console.error(
+      'Missing --password (or ADMIN_PASSWORD env), or it is shorter than 12 characters'
+    );
     process.exit(1);
-  }
-  if (password.length < 8) {
-    console.warn('Warning: password is shorter than 8 characters — use only for local/dev.');
   }
 
   const email = emailRaw.trim().toLowerCase();

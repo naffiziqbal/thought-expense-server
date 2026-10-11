@@ -42,7 +42,6 @@ HEALTHCHECK_URL="$(cfg BACKUP_HEALTHCHECK_URL)"
 LOCAL_ONLY="$(cfg BACKUP_LOCAL_ONLY)"
 TELEGRAM_BOT_TOKEN="$(cfg TELEGRAM_BOT_TOKEN)"
 TELEGRAM_ALERT_CHAT_ID="$(cfg TELEGRAM_ALERT_CHAT_ID)"
-LINK_HOURS="$(cfg BACKUP_LINK_TTL_HOURS 24)"
 
 timestamp="$(date -u +%F_%H-%M-%S)"
 target="${BACKUP_DIR}/db_${timestamp}.dump"
@@ -107,21 +106,16 @@ fi
 # Marker read by the API's ops monitor: alerts if no successful backup in ALERT_BACKUP_MAX_AGE_HOURS.
 date -u +%FT%TZ > "${BACKUP_DIR}/last_success"
 
-# Daily confirmation with an expiring, private download link. The URL is only
-# held in memory and sent to Telegram — never written to the log.
+# Daily confirmation only. Never put a download link here: a chat message
+# outlives its expiry in history, previews and backups, and a link to this file
+# hands out the whole database. Download from the admin console (System >
+# Database backups), which issues a one-hour link and records it in the audit log.
 size_mb="$(awk -v b="$size" 'BEGIN { printf "%.1f", b / 1048576 }')"
 summary="✅ Backup OK — ${size_mb} MB, $(date -u +'%F %H:%M UTC') on $(hostname)"
 if [ -n "${uploaded:-}" ]; then
-  if url="$(node "${SERVER_DIR}/scripts/spaces-backup.js" link "$target" "$LINK_HOURS" 2>/dev/null)" && [ -n "$url" ]; then
-    printf -v message '%s\n\nDownload (expires in %sh — anyone with this link can download the full database, do not forward):\n%s' \
-      "$summary" "$LINK_HOURS" "$url"
-    telegram "$message"
-  else
-    log "warning: could not create a download link"
-    telegram "${summary} (download link could not be created — use spaces-backup.js list/download)"
-  fi
+  telegram "${summary}, stored in Spaces"
 else
-  telegram "${summary} (local copy only — no download link)"
+  telegram "${summary} (local copy only)"
 fi
 
 log "done"

@@ -39,12 +39,14 @@ describe('password reset endpoints', () => {
     expect(res.body.message).toMatch(/if an account exists/i);
   });
 
-  it('rejects a bad OTP', async () => {
+  // This file runs without Redis. Without its guess counters, code checks must
+  // refuse rather than run unlimited. (Wrong-code handling: passwordReset.api.test.ts.)
+  it('refuses code checks when the guess counter is unavailable', async () => {
     const res = await request(app).post('/api/auth/verify-otp').send({
       email: testUnknownEmail(),
       otp: '000000',
     });
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(503);
   });
 
   it('rejects an access token used as a reset token', async () => {
@@ -91,9 +93,7 @@ describe('legacy access tokens', () => {
       expiresIn: '7d',
     });
 
-    const res = await request(app)
-      .get('/api/auth/me')
-      .set('Authorization', `Bearer ${legacy}`);
+    const res = await request(app).get('/api/auth/me').set('Authorization', `Bearer ${legacy}`);
 
     expect(res.status).toBe(200);
     expect(res.body.data.user.id).toBe(account.user.id);

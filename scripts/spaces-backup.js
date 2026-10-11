@@ -185,13 +185,14 @@ async function download(s3, key, dest) {
 
 /**
  * Print a private download URL that stops working after `hours` (default
- * BACKUP_LINK_TTL_HOURS or 24; S3 signatures cap at 7 days). Accepts a local
- * dump path or a bare filename, resolved under the backup prefix.
+ * BACKUP_LINK_TTL_HOURS or 1; S3 signatures cap at 7 days). Accepts a local
+ * dump path or a bare filename, resolved under the backup prefix. Anyone with
+ * the URL can download the whole database: keep it short and never post it in chat.
  */
 async function link(s3, fileOrKey, hoursArg) {
   if (!fileOrKey) die('usage: spaces-backup.js link <file-or-key> [hours]');
   const key = fileOrKey.startsWith(`${PREFIX}/`) ? fileOrKey : `${PREFIX}/${path.basename(fileOrKey)}`;
-  const hours = Number(hoursArg || process.env.BACKUP_LINK_TTL_HOURS || 24);
+  const hours = Number(hoursArg || process.env.BACKUP_LINK_TTL_HOURS || 1);
   if (!Number.isFinite(hours) || hours <= 0) die(`invalid hours: ${hoursArg}`);
   const expiresIn = Math.min(Math.round(hours * 3600), 7 * 24 * 3600);
 

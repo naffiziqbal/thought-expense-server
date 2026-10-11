@@ -5,7 +5,13 @@ import { sendPasswordResetOtpEmail } from '../services/email.service';
 import multer from 'multer';
 import crypto from 'crypto';
 import { deleteUserVectors } from '../services/pinecone.service';
-import { setCache, getCache, deleteCache, deleteCachePattern } from '../config/redis';
+import {
+  setCache,
+  getCache,
+  deleteCache,
+  deleteCachePattern,
+  incrementCounter,
+} from '../config/redis';
 import prisma from '../config/prisma';
 import { asyncHandler } from '../middleware/error.middleware';
 import { AppError } from '../middleware/error.middleware';
@@ -32,13 +38,42 @@ const generateToken = (userId: string, tokenVersion = 0): string => {
   );
 };
 
-// Generate password reset token (1 hour expiry)
-const generatePasswordResetToken = (userId: string, email: string): string => {
+// Generate password reset token (1 hour expiry). `ver` ties it to the current
+// tokenVersion, which a reset bumps, so each token works once.
+const generatePasswordResetToken = (
+  userId: string,
+  email: string,
+  tokenVersion: number
+): string => {
   const secret = process.env.JWT_SECRET as string;
-  return jwt.sign({ id: userId, email, purpose: 'password_reset' }, secret, {
+  return jwt.sign({ id: userId, email, ver: tokenVersion, purpose: 'password_reset' }, secret, {
     expiresIn: '1h',
   } as SignOptions);
 };
+
+// Password-reset codes are 6 digits, so guessing is limited per email, not
+// just per IP (IPs are cheap to rotate). Counters are atomic: concurrent
+// guesses can't all slip under the limit.
+const OTP_TTL_SECONDS = 600;
+const OTP_MAX_GUESSES_PER_CODE = 5;
+const OTP_MAX_GUESSES_PER_HOUR = 10;
+const OTP_MAX_CODES_PER_HOUR = 3;
+
+const otpKeys = (email: string) => ({
+  code: `pwd-otp:${email}`,
+  tries: `pwd-otp-tries:${email}`,
+  hourlyGuesses: `pwd-otp-guesses:${email}`,
+  hourlySends: `pwd-otp-sends:${email}`,
+});
+
+const RESET_UNAVAILABLE =
+  'Password reset is temporarily unavailable. Please try again in a few minutes.';
+
+function sameHash(a: string, b: string): boolean {
+  const x = Buffer.from(a, 'hex');
+  const y = Buffer.from(b, 'hex');
+  return x.length === y.length && crypto.timingSafeEqual(x, y);
+}
 
 // @desc    Register a new user
 // @route   POST /api/auth/signup
@@ -325,10 +360,24 @@ export const forgotPassword = asyncHandler(
       return;
     }
 
-    // Generate a 6-digit OTP and store its hash for 10 minutes
+    const keys = otpKeys(user.email);
+    const sends = await incrementCounter(keys.hourlySends, 3600);
+    if (sends === null) {
+      return next(new AppError(RESET_UNAVAILABLE, 503));
+    }
+    if (sends > OTP_MAX_CODES_PER_HOUR) {
+      // Same answer as for an unknown email; just don't mint another code.
+      logger.warn({ userId: user.id }, 'Password reset code limit reached');
+      res.json({ success: true, message: successMessage });
+      return;
+    }
+
+    // Generate a 6-digit OTP and store its hash for 10 minutes; a new code
+    // gets a fresh per-code guess budget (the hourly budget carries over).
     const otp = crypto.randomInt(100000, 1000000).toString();
     const otpHash = crypto.createHash('sha256').update(otp).digest('hex');
-    await setCache(`pwd-otp:${user.email}`, { otpHash, attempts: 0 }, 600);
+    await setCache(keys.code, { otpHash }, OTP_TTL_SECONDS);
+    await deleteCache(keys.tries);
 
     const result = await sendPasswordResetOtpEmail(user.email, otp);
 
@@ -358,7 +407,7 @@ export const resetPassword = asyncHandler(
     }
 
     const secret = process.env.JWT_SECRET as string;
-    let decoded: { id: string; email: string; purpose?: string };
+    let decoded: { id: string; email: string; ver?: number; purpose?: string };
 
     try {
       decoded = jwt.verify(token, secret) as typeof decoded;
@@ -376,6 +425,13 @@ export const resetPassword = asyncHandler(
 
     if (!user || user.email !== decoded.email) {
       return next(new AppError('Invalid reset token', 400));
+    }
+
+    // Used already (a reset bumps tokenVersion), or issued before a password change.
+    if (decoded.ver !== user.tokenVersion) {
+      return next(
+        new AppError('This reset link has already been used. Please request a new code.', 400)
+      );
     }
 
     const salt = await bcrypt.genSalt(12);
@@ -453,32 +509,38 @@ export const verifyResetOtp = asyncHandler(
       return next(new AppError('Email and code are required', 400));
     }
 
-    const key = `pwd-otp:${email}`;
-    const record = await getCache<{ otpHash: string; attempts: number }>(key);
+    const keys = otpKeys(email);
 
+    // Count the guess before looking at it, atomically, so parallel requests
+    // can't all pass the limit check.
+    const hourly = await incrementCounter(keys.hourlyGuesses, 3600);
+    const tries = await incrementCounter(keys.tries, OTP_TTL_SECONDS);
+    if (hourly === null || tries === null) {
+      return next(new AppError(RESET_UNAVAILABLE, 503));
+    }
+    if (hourly > OTP_MAX_GUESSES_PER_HOUR || tries > OTP_MAX_GUESSES_PER_CODE) {
+      await deleteCache(keys.code);
+      return next(new AppError('Too many attempts. Please request a new code later.', 429));
+    }
+
+    const record = await getCache<{ otpHash: string }>(keys.code);
     if (!record) {
       return next(new AppError('Invalid or expired code. Please request a new one.', 400));
     }
 
-    if (record.attempts >= 5) {
-      await deleteCache(key);
-      return next(new AppError('Too many attempts. Please request a new code.', 429));
-    }
-
     const otpHash = crypto.createHash('sha256').update(String(otp)).digest('hex');
-    if (otpHash !== record.otpHash) {
-      await setCache(key, { ...record, attempts: record.attempts + 1 }, 600);
+    if (!sameHash(otpHash, record.otpHash)) {
       return next(new AppError('Invalid or expired code. Please request a new one.', 400));
     }
 
     const user = await prisma.user.findUnique({ where: { email } });
+    await deleteCache(keys.code);
+    await deleteCache(keys.tries);
     if (!user) {
-      await deleteCache(key);
       return next(new AppError('Invalid or expired code. Please request a new one.', 400));
     }
 
-    await deleteCache(key);
-    const resetToken = generatePasswordResetToken(user.id, user.email);
+    const resetToken = generatePasswordResetToken(user.id, user.email, user.tokenVersion);
 
     res.json({
       success: true,
