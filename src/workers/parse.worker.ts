@@ -1,4 +1,4 @@
-import { Job, Worker } from 'bullmq';
+import { Job, UnrecoverableError, Worker } from 'bullmq';
 import prisma from '../config/prisma';
 import {
   categoryBudgetParseQueue,
@@ -64,6 +64,46 @@ async function throwIfImportCancelled(job: Job<ExpenseParseJobData>): Promise<vo
   }
 }
 
+function isDocumentJob(job: Job<ExpenseParseJobData>): boolean {
+  return !!(job.data.importFileName || job.data.documentMime);
+}
+
+/**
+ * Drop the statement itself (the file and the text read from it) from a
+ * finished document job. The import screen only needs the file name and
+ * status, and a job's data otherwise sits in Redis until the job is removed.
+ */
+async function scrubDocumentJob(job: Job<ExpenseParseJobData>): Promise<void> {
+  await job
+    .updateData({ ...job.data, documentBase64: undefined, rawInput: '', localPreview: undefined })
+    .catch((err) => logger.warn({ err, jobId: job.id }, 'Could not scrub document import job'));
+}
+
+/**
+ * Wrap the parse processor so document jobs are scrubbed once they are done:
+ * on success, on their final failed attempt, or when cancelled. Earlier failed
+ * attempts keep the data, since the retry needs it. A cancelled import stops
+ * instead of retrying.
+ */
+export function withDocumentCleanup(
+  process: (job: Job<ExpenseParseJobData>) => Promise<ExpenseParseJobResult>
+): (job: Job<ExpenseParseJobData>) => Promise<ExpenseParseJobResult> {
+  return async (job) => {
+    try {
+      const result = await process(job);
+      if (isDocumentJob(job)) await scrubDocumentJob(job);
+      return result;
+    } catch (err) {
+      if (isDocumentJob(job)) {
+        const cancelled = err instanceof Error && err.message === IMPORT_CANCELLED;
+        if (cancelled || isLastAttempt(job)) await scrubDocumentJob(job);
+        if (cancelled) throw new UnrecoverableError(IMPORT_CANCELLED);
+      }
+      throw err;
+    }
+  };
+}
+
 async function persistCreated(
   userId: string,
   parsedExpenses: Array<{
@@ -115,7 +155,7 @@ export const startParseWorkers = () => {
   if (!expenseWorker) {
     expenseWorker = new Worker<ExpenseParseJobData, ExpenseParseJobResult>(
       EXPENSE_PARSE_QUEUE,
-      async (job: Job<ExpenseParseJobData>) => {
+      withDocumentCleanup(async (job: Job<ExpenseParseJobData>) => {
         const { userId, create, userCurrency, localPreview, date, documentBase64, documentMime } =
           job.data;
         let rawInput = job.data.rawInput;
@@ -215,7 +255,7 @@ export const startParseWorkers = () => {
         await job.updateProgress(88);
         const result = await persistCreated(userId, parsedExpenses, rawInput, userCurrency, jobKey);
         return finishDocumentImport(job, userId, result);
-      },
+      }),
       {
         connection: queueConnection,
         // OCR + parse can run several minutes; default 30s lock causes false "stalled" → back to waiting (looks stuck on Queued).
@@ -249,6 +289,10 @@ export const startParseWorkers = () => {
   }
 
   expenseWorker.on('failed', (job, error) => {
+    if (error?.message === IMPORT_CANCELLED) {
+      logger.info({ jobId: job?.id }, 'Document import cancelled by user');
+      return;
+    }
     const max = job?.opts.attempts ?? 1;
     const final = (job?.attemptsMade ?? 0) >= max;
     if (!final) {

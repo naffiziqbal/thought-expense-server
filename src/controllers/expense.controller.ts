@@ -15,7 +15,7 @@ import {
 import { convertAmountsToCurrency } from '../services/exchangeRate.service';
 import { setCache, getCache, deleteCachePattern } from '../config/redis';
 import { AuthRequest } from '../middleware/auth.middleware';
-import { expenseParseQueue } from '../queues/expenseParse.queue';
+import { DOCUMENT_IMPORT_JOB_OPTIONS, expenseParseQueue } from '../queues/expenseParse.queue';
 import {
   persistParsedExpenses,
   resolveSelectedExpenseDate,
@@ -961,7 +961,7 @@ export const enqueueImportDocument = asyncHandler(
           documentMime: file.mimetype || 'application/octet-stream',
           importFileName: file.originalname,
         },
-        { jobId, priority: 10 }
+        { jobId, priority: 10, ...DOCUMENT_IMPORT_JOB_OPTIONS }
       );
     } catch (err) {
       job = await expenseParseQueue.getJob(jobId);
