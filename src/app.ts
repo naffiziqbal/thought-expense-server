@@ -28,6 +28,8 @@ app.set('trust proxy', trustProxyHops());
 app.use(helmet());
 app.use(cors(corsOptions()));
 
+console.log('test server');
+
 // Rate limiting — Redis-backed after initRateLimiters() (see startServer).
 // Keyed by JWT user id when present, else IP. AI routes are tighter.
 // AI limit applies on expense routes to POST parse/OCR only — not GET job status polls.
