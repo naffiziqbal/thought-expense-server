@@ -66,19 +66,26 @@ function globalMonthKey(month: string): string {
   return `metrics:ai:month:${month}`;
 }
 
+/** Replies served from the Redis response cache (see aiCache.service), per day (95-day TTL). */
+function cacheDayKey(day: string): string {
+  return `metrics:ai:cache:${day}`;
+}
+
 export interface AiCallUsage {
   /** Model that actually served the call (after fallbacks). */
   model: string;
   inputTokens: number;
   /** Candidates + thinking tokens (both billed as output). */
   outputTokens: number;
+  /** Part of `inputTokens` Gemini served from its context cache (billed at a discount). */
+  cachedInputTokens?: number;
 }
 
 /**
  * Per-user AI usage. Day hash (95-day TTL) fields:
- *   <kind>:calls|tokens|in|out|cost, m:<model>:calls|in|out|cost, total:tokens|cost
- * Lifetime hash (no TTL): calls, in, out, cost, since.
- * Monthly hashes (no TTL), per user and across all users: calls, in, out, cost, <kind>:calls, <kind>:cost.
+ *   <kind>:calls|tokens|in|out|cached|cost, m:<model>:calls|in|out|cost, total:tokens|cost
+ * Lifetime hash (no TTL): calls, in, out, cached, cost, since.
+ * Monthly hashes (no TTL), per user and across all users: calls, in, out, cached, cost, <kind>:calls, <kind>:cost.
  * Cost is stored in nano-USD at list price (see config/aiPricing).
  */
 export async function recordUserAiUsage(
@@ -92,8 +99,9 @@ export async function recordUserAiUsage(
     const model = normalizeModelName(usage.model);
     const input = Math.max(0, Math.round(usage.inputTokens) || 0);
     const output = Math.max(0, Math.round(usage.outputTokens) || 0);
+    const cached = Math.min(input, Math.max(0, Math.round(usage.cachedInputTokens ?? 0) || 0));
     const tokens = input + output;
-    const cost = costNanoUsd(model, input, output);
+    const cost = costNanoUsd(model, input, output, cached);
     const key = userDayKey(userId, dayKey());
     const lifetime = userLifetimeKey(userId);
     const month = monthKey();
@@ -104,6 +112,7 @@ export async function recordUserAiUsage(
       .hIncrBy(key, `${kind}:tokens`, tokens)
       .hIncrBy(key, `${kind}:in`, input)
       .hIncrBy(key, `${kind}:out`, output)
+      .hIncrBy(key, `${kind}:cached`, cached)
       .hIncrBy(key, `${kind}:cost`, cost)
       .hIncrBy(key, `m:${model}:calls`, 1)
       .hIncrBy(key, `m:${model}:in`, input)
@@ -115,6 +124,7 @@ export async function recordUserAiUsage(
       .hIncrBy(lifetime, 'calls', 1)
       .hIncrBy(lifetime, 'in', input)
       .hIncrBy(lifetime, 'out', output)
+      .hIncrBy(lifetime, 'cached', cached)
       .hIncrBy(lifetime, 'cost', cost)
       .hSetNX(lifetime, 'since', new Date().toISOString());
     const globalDay = globalDayKey(dayKey());
@@ -127,6 +137,7 @@ export async function recordUserAiUsage(
         .hIncrBy(monthly, 'calls', 1)
         .hIncrBy(monthly, 'in', input)
         .hIncrBy(monthly, 'out', output)
+        .hIncrBy(monthly, 'cached', cached)
         .hIncrBy(monthly, 'cost', cost)
         .hIncrBy(monthly, `${kind}:calls`, 1)
         .hIncrBy(monthly, `${kind}:cost`, cost);
@@ -145,6 +156,28 @@ export async function recordAiUsage(kind: AiMetricKind, count = 1): Promise<void
     await client.expire(key, TTL_SECONDS);
   } catch (err) {
     logger.debug({ err, kind }, 'recordAiUsage failed');
+  }
+}
+
+/**
+ * A reply served from the response cache instead of the model. `savedNanoUsd` is what the
+ * original call cost, i.e. what this hit avoided. Day hash fields: <kind>:hits|saved, hits, saved.
+ */
+export async function recordAiCacheHit(kind: AiMetricKind, savedNanoUsd: number): Promise<void> {
+  try {
+    const client = getRedisClient();
+    const key = cacheDayKey(dayKey());
+    const saved = Math.max(0, Math.round(savedNanoUsd) || 0);
+    await client
+      .multi()
+      .hIncrBy(key, `${kind}:hits`, 1)
+      .hIncrBy(key, `${kind}:saved`, saved)
+      .hIncrBy(key, 'hits', 1)
+      .hIncrBy(key, 'saved', saved)
+      .expire(key, TTL_SECONDS)
+      .exec();
+  } catch (err) {
+    logger.debug({ err, kind }, 'recordAiCacheHit failed');
   }
 }
 
@@ -185,10 +218,13 @@ export async function getAiUsageSeries(days: number): Promise<{
   series: Array<{ date: string; total: number; byKind: Record<string, number> }>;
   totals: Record<string, number>;
   fallbacks: Record<string, number>;
+  /** Response-cache hits over the window: calls avoided per kind and what they would have cost. */
+  cache: { hits: number; savedUsd: number; hitsByKind: Record<string, number> };
 }> {
   const series: Array<{ date: string; total: number; byKind: Record<string, number> }> = [];
   const totals: Record<string, number> = {};
   const fallbacks: Record<string, number> = {};
+  const cache = { hits: 0, savedUsd: 0, hitsByKind: {} as Record<string, number> };
 
   try {
     const client = getRedisClient();
@@ -210,13 +246,20 @@ export async function getAiUsageSeries(days: number): Promise<{
       const fbRaw = await client.get(fallbackKey(date));
       const fb = fbRaw ? parseInt(fbRaw, 10) : 0;
       if (fb > 0) fallbacks[date] = fb;
+      const cacheDay = await client.hGetAll(cacheDayKey(date));
+      cache.hits += parseInt(cacheDay.hits ?? '0', 10) || 0;
+      cache.savedUsd += (parseInt(cacheDay.saved ?? '0', 10) || 0) / NANO_USD;
+      for (const kind of AI_METRIC_KINDS) {
+        const n = parseInt(cacheDay[`${kind}:hits`] ?? '0', 10) || 0;
+        if (n > 0) cache.hitsByKind[kind] = (cache.hitsByKind[kind] ?? 0) + n;
+      }
       series.push({ date, total, byKind });
     }
   } catch (err) {
     logger.warn({ err }, 'getAiUsageSeries failed');
   }
 
-  return { series, totals, fallbacks };
+  return { series, totals, fallbacks, cache };
 }
 
 export interface AiUsageStats {

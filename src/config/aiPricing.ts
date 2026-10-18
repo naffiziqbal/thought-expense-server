@@ -12,7 +12,12 @@ export interface ModelPrice {
   input: number;
   /** USD per 1M output tokens (candidates + thinking) */
   output: number;
+  /** USD per 1M input tokens served from Gemini's context cache. Defaults to 10% of `input`. */
+  cachedInput?: number;
 }
+
+/** Gemini bills cached prompt tokens at 10% of the input rate (2.5 and later). */
+const CACHED_INPUT_RATIO = 0.1;
 
 const DEFAULT_PRICING: Record<string, ModelPrice> = {
   'gemini-2.5-flash': { input: 0.3, output: 2.5 },
@@ -65,11 +70,23 @@ export function priceForModel(model: string): ModelPrice & { known: boolean } {
   return { ...UNKNOWN_MODEL_PRICE, known: false };
 }
 
-/** Cost in nano-USD (1e-9 USD) so it can be stored with integer HINCRBY without losing tiny calls. */
-export function costNanoUsd(model: string, inputTokens: number, outputTokens: number): number {
+/**
+ * Cost in nano-USD (1e-9 USD) so it can be stored with integer HINCRBY without losing tiny calls.
+ * `cachedInputTokens` is the part of `inputTokens` Gemini served from its cache.
+ */
+export function costNanoUsd(
+  model: string,
+  inputTokens: number,
+  outputTokens: number,
+  cachedInputTokens = 0
+): number {
   const p = priceForModel(model);
+  const cached = Math.min(Math.max(0, cachedInputTokens), inputTokens);
+  const cachedPrice = p.cachedInput ?? p.input * CACHED_INPUT_RATIO;
   // price is USD per 1M tokens → nano-USD per token is `price * 1000`
-  return Math.round((inputTokens * p.input + outputTokens * p.output) * 1000);
+  return Math.round(
+    ((inputTokens - cached) * p.input + cached * cachedPrice + outputTokens * p.output) * 1000
+  );
 }
 
 export const NANO_USD = 1e9;

@@ -4,7 +4,7 @@
  * proposes realistic, numbers-grounded ways to save.
  */
 
-import { runInsightsModel, extractJson } from './gemini.service';
+import { runInsightsModel, extractJson, AI_CACHE_TTL } from './gemini.service';
 import type { AiMetricKind } from './aiMetrics.service';
 import { SpendingIntelligence } from './analytics.service';
 
@@ -177,12 +177,12 @@ export async function answerFinancialQuestion(
           .join('\n')}\n`
       : '';
 
-  const prompt = `${ADVISOR_PERSONA}
-
-USER'S FINANCIAL DATA:
+  // Most stable first (persona → financial data → conversation so far), so follow-up
+  // questions share a long prefix with the previous call for Gemini's implicit cache.
+  const prompt = `USER'S FINANCIAL DATA:
 ${contextBlock(ctx)}
-${ragBlock}
-${historyBlock ? `CONVERSATION SO FAR:\n${historyBlock}\n` : ''}
+
+${historyBlock ? `CONVERSATION SO FAR:\n${historyBlock}\n` : ''}${ragBlock}
 USER'S QUESTION: "${question}"
 
 Answer the question using the data. Then suggest up to 2 natural follow-up questions the user might ask next.
@@ -193,7 +193,11 @@ Return JSON:
   "followUps": ["follow-up question 1", "follow-up question 2"]
 }`;
 
-  const raw = await runInsightsModel(prompt, metricKind, undefined, ctx.userId);
+  const raw = await runInsightsModel(prompt, metricKind, undefined, ctx.userId, {
+    systemInstruction: ADVISOR_PERSONA,
+    json: true,
+    cacheTtlSeconds: AI_CACHE_TTL.advisor,
+  });
   try {
     const parsed = extractJson(raw);
     return {
@@ -226,9 +230,7 @@ export async function generateSavingsPlan(
   ctx: AdvisorContext,
   targetAmount: number
 ): Promise<SavingsPlan> {
-  const prompt = `${ADVISOR_PERSONA}
-
-USER'S FINANCIAL DATA:
+  const prompt = `USER'S FINANCIAL DATA:
 ${contextBlock(ctx)}
 
 The user wants to save ${targetAmount} ${ctx.currency} next month.
@@ -249,7 +251,11 @@ Return JSON:
   ]
 }`;
 
-  const raw = await runInsightsModel(prompt, 'advisor_savings', undefined, ctx.userId);
+  const raw = await runInsightsModel(prompt, 'advisor_savings', undefined, ctx.userId, {
+    systemInstruction: ADVISOR_PERSONA,
+    json: true,
+    cacheTtlSeconds: AI_CACHE_TTL.advisor,
+  });
   const parsed = extractJson(raw);
   const steps: SavingsPlanStep[] = (Array.isArray(parsed.steps) ? parsed.steps : [])
     .map((s: any) => ({
@@ -282,9 +288,7 @@ export async function generateBriefingContent(
   weekByCategory: Record<string, number>,
   options?: { includeBackupKey?: boolean }
 ): Promise<BriefingContent> {
-  const prompt = `${ADVISOR_PERSONA}
-
-USER'S FINANCIAL DATA:
+  const prompt = `USER'S FINANCIAL DATA:
 ${contextBlock(ctx)}
 
 THIS WEEK: total ${weekTotal} ${ctx.currency}, by category: ${JSON.stringify(weekByCategory)}
@@ -309,7 +313,9 @@ Return JSON:
     prompt,
     'briefing',
     { includeBackupKey: options?.includeBackupKey },
-    ctx.userId
+    ctx.userId,
+    // Weekly and unique per user, so no response cache; the persona still forms a shared prefix.
+    { systemInstruction: ADVISOR_PERSONA, json: true }
   );
   const parsed = extractJson(raw);
   return {

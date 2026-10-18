@@ -1,14 +1,23 @@
-import { GoogleGenerativeAI, GenerativeModel } from '@google/generative-ai';
+import { GoogleGenerativeAI, GenerativeModel, type ModelParams } from '@google/generative-ai';
 import { findCategoryFromCatalog } from './categoryCatalog.service';
 import { logger } from '../config/logger';
+import { costNanoUsd, normalizeModelName } from '../config/aiPricing';
 import { normalizeDigits, parseAmount } from '../utils/digits.util';
 import { EMBEDDING_DIMENSIONS, isValidEmbedding } from './pinecone.service';
 import {
+  recordAiCacheHit,
   recordAiFallback,
   recordAiUsage,
   recordUserAiUsage,
   type AiMetricKind,
 } from './aiMetrics.service';
+import {
+  aiResponseCacheEnabled,
+  aiResponseCacheKey,
+  getCachedAiResponse,
+  setCachedAiResponse,
+  type AiContents,
+} from './aiCache.service';
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || '');
 
@@ -180,7 +189,8 @@ function buildAttempts(primaryModels: string[], options?: GeminiFallbackOptions)
 export async function generateWithRetryAndFallback<T>(
   models: string[],
   fn: (model: GenerativeModel) => Promise<T>,
-  options?: GeminiFallbackOptions
+  options?: GeminiFallbackOptions,
+  modelParams?: Omit<ModelParams, 'model'>
 ): Promise<T> {
   const attempts = buildAttempts(models, options);
   const maxRetries = 2;
@@ -190,7 +200,7 @@ export async function generateWithRetryAndFallback<T>(
     const { client, model, label } = attempts[i];
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       try {
-        const result = await fn(client.getGenerativeModel({ model }));
+        const result = await fn(client.getGenerativeModel({ ...modelParams, model }));
         // One fallback per call that the primary model on the primary key didn't serve.
         if (label !== 'primary' || model !== models[0]) void recordAiFallback();
         return result;
@@ -234,13 +244,20 @@ export async function generateWithRetryAndFallback<T>(
   throw lastError;
 }
 
-function usageFromMetadata(meta: unknown): { inputTokens: number; outputTokens: number } {
-  if (!meta || typeof meta !== 'object') return { inputTokens: 0, outputTokens: 0 };
+function usageFromMetadata(meta: unknown): {
+  inputTokens: number;
+  outputTokens: number;
+  cachedInputTokens: number;
+} {
+  if (!meta || typeof meta !== 'object') {
+    return { inputTokens: 0, outputTokens: 0, cachedInputTokens: 0 };
+  }
   const m = meta as {
     totalTokenCount?: number;
     promptTokenCount?: number;
     candidatesTokenCount?: number;
     thoughtsTokenCount?: number;
+    cachedContentTokenCount?: number;
   };
   const num = (v: unknown) => (typeof v === 'number' && v > 0 ? v : 0);
   const inputTokens = num(m.promptTokenCount);
@@ -248,18 +265,117 @@ function usageFromMetadata(meta: unknown): { inputTokens: number; outputTokens: 
   let outputTokens = num(m.candidatesTokenCount) + num(m.thoughtsTokenCount);
   const total = num(m.totalTokenCount);
   if (total > inputTokens + outputTokens) outputTokens = total - inputTokens;
-  return { inputTokens, outputTokens };
+  // Prompt tokens Gemini served from its implicit/explicit context cache (part of promptTokenCount).
+  const cachedInputTokens = Math.min(num(m.cachedContentTokenCount), inputTokens);
+  return { inputTokens, outputTokens, cachedInputTokens };
 }
 
+/** Records the call and returns what it cost (nano-USD at list price). */
 function recordGeminiSuccess(
   kind: AiMetricKind,
   userId: string | undefined,
   usageMetadata: unknown,
   model: string
-): void {
+): number {
   void recordAiUsage(kind);
-  if (!userId) return;
-  void recordUserAiUsage(userId, kind, { model, ...usageFromMetadata(usageMetadata) });
+  const usage = usageFromMetadata(usageMetadata);
+  if (userId) void recordUserAiUsage(userId, kind, { model, ...usage });
+  return costNanoUsd(
+    normalizeModelName(model),
+    usage.inputTokens,
+    usage.outputTokens,
+    usage.cachedInputTokens
+  );
+}
+
+/** Primary model first, then the shared fallbacks (without repeating the primary). */
+const modelChain = (primary: string): string[] => [
+  primary,
+  ...FALLBACK_MODELS.filter((m) => m !== primary),
+];
+
+/** How long an identical request's reply is reused from Redis, per task. */
+export const AI_CACHE_TTL = {
+  parse: 24 * 60 * 60, // date, currency and the user's category history are in the key
+  suggest: 7 * 24 * 60 * 60,
+  budget: 24 * 60 * 60,
+  ocr: 24 * 60 * 60, // same file bytes → same text (retries, re-uploads)
+  insights: 6 * 60 * 60,
+  advisor: 60 * 60,
+} as const;
+
+export interface GenerateOptions {
+  /**
+   * Static instructions, sent as systemInstruction. Keep this byte-identical across calls and
+   * put per-user/per-request data in the contents: Gemini's implicit cache bills a repeated
+   * prompt prefix at ~10% of the input price once the prefix is long enough.
+   */
+  systemInstruction?: string;
+  /** Request application/json, and only cache replies that parse as JSON. */
+  json?: boolean;
+  /** Reuse an identical request's reply from Redis for this many seconds. Omit to always call. */
+  cacheTtlSeconds?: number;
+  /** Cache key namespace when several metric kinds run the same task. Defaults to the kind. */
+  cacheNamespace?: string;
+  fallbackOptions?: GeminiFallbackOptions;
+}
+
+/**
+ * One Gemini text generation with retry/fallback, usage accounting and the response cache.
+ * Every generateContent call in this service goes through here.
+ */
+async function generate(
+  models: string[],
+  contents: AiContents,
+  kind: AiMetricKind,
+  userId: string | undefined,
+  options: GenerateOptions = {}
+): Promise<string> {
+  const { systemInstruction, json, cacheTtlSeconds, cacheNamespace, fallbackOptions } = options;
+  const cacheKey =
+    cacheTtlSeconds && aiResponseCacheEnabled()
+      ? aiResponseCacheKey(cacheNamespace ?? kind, systemInstruction ?? '', contents)
+      : null;
+
+  if (cacheKey) {
+    const hit = await getCachedAiResponse(cacheKey);
+    if (hit) {
+      void recordAiCacheHit(kind, hit.costNanoUsd);
+      return hit.text;
+    }
+  }
+
+  let costNano = 0;
+  const text = await generateWithRetryAndFallback(
+    models,
+    async (model) => {
+      const result = await model.generateContent(contents);
+      costNano = recordGeminiSuccess(kind, userId, result.response.usageMetadata, model.model);
+      return result.response.text();
+    },
+    fallbackOptions,
+    {
+      ...(systemInstruction ? { systemInstruction } : {}),
+      ...(json ? { generationConfig: { responseMimeType: 'application/json' } } : {}),
+    }
+  );
+
+  if (cacheKey && isCacheable(text, json)) {
+    await setCachedAiResponse(cacheKey, { text, costNanoUsd: costNano }, cacheTtlSeconds!);
+  }
+  return text;
+}
+
+/** Never cache an empty or unparseable reply — it would be served back for the whole TTL. */
+function isCacheable(text: string, json?: boolean): boolean {
+  if (!text?.trim()) return false;
+  if (!json) return true;
+  try {
+    extractJson(text);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 const EMBEDDING_MODEL = process.env.EMBEDDING_MODEL || 'gemini-embedding-001';
@@ -272,19 +388,13 @@ export const runInsightsModel = async (
   prompt: string,
   metricKind: AiMetricKind = 'insights',
   fallbackOptions?: GeminiFallbackOptions,
-  userId?: string
-): Promise<string> => {
-  const modelsToTry = [INSIGHTS_MODEL, ...FALLBACK_MODELS.filter((m) => m !== INSIGHTS_MODEL)];
-  return generateWithRetryAndFallback(
-    modelsToTry,
-    async (model) => {
-      const result = await model.generateContent(prompt);
-      recordGeminiSuccess(metricKind, userId, result.response.usageMetadata, model.model);
-      return result.response.text();
-    },
-    fallbackOptions
-  );
-};
+  userId?: string,
+  options?: Omit<GenerateOptions, 'fallbackOptions'>
+): Promise<string> =>
+  generate(modelChain(INSIGHTS_MODEL), prompt, metricKind, userId, {
+    ...options,
+    fallbackOptions,
+  });
 
 /**
  * Run a text prompt against the (fast) parsing model with retry + fallback.
@@ -292,15 +402,9 @@ export const runInsightsModel = async (
 export const runParsingModel = async (
   prompt: string,
   metricKind: AiMetricKind = 'parse',
-  userId?: string
-): Promise<string> => {
-  const modelsToTry = [PARSING_MODEL, ...FALLBACK_MODELS.filter((m) => m !== PARSING_MODEL)];
-  return generateWithRetryAndFallback(modelsToTry, async (model) => {
-    const result = await model.generateContent(prompt);
-    recordGeminiSuccess(metricKind, userId, result.response.usageMetadata, model.model);
-    return result.response.text();
-  });
-};
+  userId?: string,
+  options?: GenerateOptions
+): Promise<string> => generate(modelChain(PARSING_MODEL), prompt, metricKind, userId, options);
 
 /** Strip markdown fences and extract the first JSON object/array from a model reply. */
 export const extractJson = (raw: string): any => {
@@ -338,7 +442,7 @@ RULES:
    - "yesterday" → calculate yesterday's date
    - "last week", "3 days ago", "monday" → calculate the date
    - "january 15" → use that date from current year
-   - If no date mentioned, use {{DEFAULT_DATE}}
+   - If no date mentioned, use the default date given with the input
 5. If currency is mentioned, use it; otherwise use the default currency given below
 6. Assign confidence score (0-1) based on clarity
 7. ALWAYS return an array, even for single expense
@@ -376,10 +480,8 @@ Examples of CONTEXT-AWARE categorization:
 - "netflix subscription" → "Streaming Services"
 - "gym membership" → "Gym Membership"
 
-USER'S CATEGORY HISTORY (learn from this):
-{{USER_CONTEXT}}
-
-Use the user's past categorizations to maintain CONSISTENCY
+The input comes with the user's category history (if any). Use the user's past
+categorizations to maintain CONSISTENCY: if a similar expense exists, use the same category.
 
 OUTPUT FORMAT (JSON array - MUST be array):
 [
@@ -397,7 +499,7 @@ OUTPUT FORMAT (JSON array - MUST be array):
 CRITICAL: 
 - Parse ALL expenses from input
 - ALWAYS include date in ISO format (YYYY-MM-DD)
-- The default date for this batch is {{DEFAULT_DATE}} — use it unless the input names a different date
+- The default date for this batch is given with the input — use it unless the input names a different date
 - Be SPECIFIC with categories
 Be precise. Return ONLY valid JSON array with ALL expenses found.`;
 
@@ -471,12 +573,10 @@ export async function parseExpenses(
     }
 
     const selectedDate = defaultDate || new Date().toISOString().split('T')[0];
-    const systemPromptWithContext = PARSING_SYSTEM_PROMPT.replace(
-      '{{USER_CONTEXT}}',
-      contextHint
-    ).replace(/\{\{DEFAULT_DATE\}\}/g, selectedDate);
 
-    const userPrompt = `${systemPromptWithContext}
+    // Static rules go in the system instruction (shared cached prefix); per-user history,
+    // then per-request values, follow in order of how often they change.
+    const userPrompt = `${contextHint.trim()}
 
 Default currency: ${userCurrency}
 Default date: ${selectedDate}
@@ -494,12 +594,11 @@ REMEMBER:
 
 Return JSON array of expenses:`;
 
-    const modelsToTry = [PARSING_MODEL, ...FALLBACK_MODELS.filter((m) => m !== PARSING_MODEL)];
-
-    const responseText = await generateWithRetryAndFallback(modelsToTry, async (model) => {
-      const result = await model.generateContent(userPrompt);
-      recordGeminiSuccess(metricKind, userId, result.response.usageMetadata, model.model);
-      return result.response.text();
+    const responseText = await generate(modelChain(PARSING_MODEL), userPrompt, metricKind, userId, {
+      systemInstruction: PARSING_SYSTEM_PROMPT,
+      json: true,
+      cacheTtlSeconds: AI_CACHE_TTL.parse,
+      cacheNamespace: 'parse', // sync and async parses share entries
     });
 
     // Extract JSON from response
@@ -577,12 +676,9 @@ Rules:
 - Ignore unrelated text.
 `;
 
-    const modelsToTry = [PARSING_MODEL, ...FALLBACK_MODELS.filter((m) => m !== PARSING_MODEL)];
-
-    const rawText = await generateWithRetryAndFallback(modelsToTry, async (model) => {
-      const result = await model.generateContent(prompt);
-      recordGeminiSuccess('budget_category', userId, result.response.usageMetadata, model.model);
-      return result.response.text();
+    const rawText = await generate(modelChain(PARSING_MODEL), prompt, 'budget_category', userId, {
+      json: true,
+      cacheTtlSeconds: AI_CACHE_TTL.budget,
     });
 
     let jsonText = rawText
@@ -647,12 +743,9 @@ Return JSON:
   "alternatives": ["Alternative 1", "Alternative 2"]
 }`;
 
-    const modelsToTry = [PARSING_MODEL, ...FALLBACK_MODELS.filter((m) => m !== PARSING_MODEL)];
-
-    const rawText = await generateWithRetryAndFallback(modelsToTry, async (model) => {
-      const result = await model.generateContent(prompt);
-      recordGeminiSuccess('parse', userId, result.response.usageMetadata, model.model);
-      return result.response.text();
+    const rawText = await generate(modelChain(PARSING_MODEL), prompt, 'parse', userId, {
+      json: true,
+      cacheTtlSeconds: AI_CACHE_TTL.suggest,
     });
     let jsonText = rawText.trim();
 
@@ -732,9 +825,7 @@ export const generateInsights = async (
       .map((e) => `${e.description} (${e.category}): ${e.amount} ${e.currency}`)
       .join('\n');
 
-    const prompt = `${INSIGHT_SYSTEM_PROMPT}
-
-EXPENSE DATA (last ${expenses.length} transactions):
+    const prompt = `EXPENSE DATA (last ${expenses.length} transactions):
 ${expenseList}
 
 SUMMARY:
@@ -748,12 +839,10 @@ and include at least one concrete, realistic saving opportunity when the data su
 Return as JSON array of strings:
 ["Insight 1", "Insight 2", "Insight 3"]`;
 
-    const modelsToTry = [INSIGHTS_MODEL, ...FALLBACK_MODELS.filter((m) => m !== INSIGHTS_MODEL)];
-
-    const rawText = await generateWithRetryAndFallback(modelsToTry, async (model) => {
-      const result = await model.generateContent(prompt);
-      recordGeminiSuccess('insights', userId, result.response.usageMetadata, model.model);
-      return result.response.text();
+    const rawText = await generate(modelChain(INSIGHTS_MODEL), prompt, 'insights', userId, {
+      systemInstruction: INSIGHT_SYSTEM_PROMPT,
+      json: true,
+      cacheTtlSeconds: AI_CACHE_TTL.insights,
     });
     let jsonText = rawText.trim();
 
@@ -789,16 +878,13 @@ OUTPUT RULES:
   If only a grand total is readable, output one line: "<store name> <total>"
 - If the image contains no readable expenses, output exactly: NONE`;
 
-  const modelsToTry = [PARSING_MODEL, ...FALLBACK_MODELS.filter((m) => m !== PARSING_MODEL)];
-
-  const text = await generateWithRetryAndFallback(modelsToTry, async (model) => {
-    const result = await model.generateContent([
-      { inlineData: { data: imageBase64, mimeType } },
-      prompt,
-    ]);
-    recordGeminiSuccess('ocr', userId, result.response.usageMetadata, model.model);
-    return result.response.text();
-  });
+  const text = await generate(
+    modelChain(PARSING_MODEL),
+    [{ inlineData: { data: imageBase64, mimeType } }, prompt],
+    'ocr',
+    userId,
+    { cacheTtlSeconds: AI_CACHE_TTL.ocr }
+  );
 
   const cleaned = (text || '').trim();
   if (!cleaned || /^NONE$/i.test(cleaned)) return '';
@@ -824,16 +910,13 @@ OUTPUT RULES:
 - If the document is a table, emit one line per row
 - If nothing is readable, output exactly: NONE`;
 
-  const modelsToTry = [PARSING_MODEL, ...FALLBACK_MODELS.filter((m) => m !== PARSING_MODEL)];
-
-  const text = await generateWithRetryAndFallback(modelsToTry, async (model) => {
-    const result = await model.generateContent([
-      { inlineData: { data: fileBase64, mimeType } },
-      prompt,
-    ]);
-    recordGeminiSuccess('ocr', userId, result.response.usageMetadata, model.model);
-    return result.response.text();
-  });
+  const text = await generate(
+    modelChain(PARSING_MODEL),
+    [{ inlineData: { data: fileBase64, mimeType } }, prompt],
+    'ocr',
+    userId,
+    { cacheTtlSeconds: AI_CACHE_TTL.ocr }
+  );
 
   const cleaned = (text || '').trim();
   if (!cleaned || /^NONE$/i.test(cleaned)) return '';
