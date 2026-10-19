@@ -4,6 +4,7 @@ import { AppError } from './error.middleware';
 import prisma from '../config/prisma';
 import { moderationBlockMessage, moderationStatus } from '../utils/userModeration.util';
 import { touchLastActive } from '../services/userActivity.service';
+import { passwordResetRequiredError } from '../utils/passwordReset.util';
 
 interface JwtPayload {
   id: string;
@@ -61,6 +62,7 @@ export const protect = async (
           tokenVersion: true,
           suspendedAt: true,
           bannedAt: true,
+          passwordResetRequired: true,
         },
       });
 
@@ -73,7 +75,18 @@ export const protect = async (
         return next(new AppError(moderationBlockMessage(mod), 403));
       }
 
-      const { tokenVersion, suspendedAt: _s, bannedAt: _b, ...sessionUser } = user;
+      // Checked before tokenVersion so revoked clients learn why and can send the user to reset.
+      if (user.passwordResetRequired) {
+        return next(passwordResetRequiredError(401));
+      }
+
+      const {
+        tokenVersion,
+        suspendedAt: _s,
+        bannedAt: _b,
+        passwordResetRequired: _r,
+        ...sessionUser
+      } = user;
       const tokenVer = typeof decoded.ver === 'number' ? decoded.ver : 0;
       if (tokenVer !== tokenVersion) {
         return next(new AppError('Not authorized to access this route', 401));

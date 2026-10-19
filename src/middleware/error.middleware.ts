@@ -4,11 +4,14 @@ import { logger } from '../config/logger';
 export class AppError extends Error {
   statusCode: number;
   isOperational: boolean;
+  /** Machine-readable reason clients can branch on (e.g. PASSWORD_RESET_REQUIRED). */
+  errorCode?: string;
 
-  constructor(message: string, statusCode: number) {
+  constructor(message: string, statusCode: number, errorCode?: string) {
     super(message);
     this.statusCode = statusCode;
     this.isOperational = true;
+    this.errorCode = errorCode;
     Error.captureStackTrace(this, this.constructor);
   }
 }
@@ -80,6 +83,7 @@ export const errorHandler = (err: any, req: Request, res: Response, _next: NextF
   res.status(error.statusCode || 500).json({
     success: false,
     message: error.message || 'Internal Server Error',
+    ...(typeof err?.errorCode === 'string' && { code: err.errorCode }),
     ...(process.env.NODE_ENV === 'development' && { stack: err.stack }),
   });
 };

@@ -25,6 +25,8 @@ model User {
   pushEnabled           Boolean   @default(true)
   budgetAlertsEnabled   Boolean   @default(true)
   tokenVersion          Int       @default(0)
+  /// Login and API access are refused until the user resets their password by email code
+  passwordResetRequired Boolean   @default(false)
   suspendedAt           DateTime?
   bannedAt              DateTime?
   moderationNote        String?

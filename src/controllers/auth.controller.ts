@@ -23,6 +23,7 @@ import { refreshStalePremium } from '../utils/subscription.util';
 import { moderationBlockMessage, moderationStatus } from '../utils/userModeration.util';
 import { normalizeIso4217Code } from '../utils/iso4217';
 import { archiveDeletedAccount } from '../services/deletedAccount.service';
+import { passwordResetRequiredError } from '../utils/passwordReset.util';
 
 // Generate JWT token
 const generateToken = (userId: string, tokenVersion = 0): string => {
@@ -168,7 +169,12 @@ export const login = asyncHandler(async (req: AuthRequest, res: Response, next: 
     return next(new AppError(moderationBlockMessage(mod), 403));
   }
 
-  const { password: _, tokenVersion, ...rest } = user;
+  // No session until the password is replaced through the emailed-code flow.
+  if (user.passwordResetRequired) {
+    return next(passwordResetRequiredError(403));
+  }
+
+  const { password: _, tokenVersion, passwordResetRequired: _r, ...rest } = user;
   const token = generateToken(user.id, tokenVersion);
   const billing = await refreshStalePremium(user.id, {
     isPremium: rest.isPremium,
@@ -439,7 +445,11 @@ export const resetPassword = asyncHandler(
 
     await prisma.user.update({
       where: { id: decoded.id },
-      data: { password: hashedPassword, tokenVersion: { increment: 1 } },
+      data: {
+        password: hashedPassword,
+        tokenVersion: { increment: 1 },
+        passwordResetRequired: false,
+      },
     });
 
     res.json({
@@ -484,7 +494,11 @@ export const changePassword = asyncHandler(
 
     const updated = await prisma.user.update({
       where: { id: userId },
-      data: { password: hashedPassword, tokenVersion: { increment: 1 } },
+      data: {
+        password: hashedPassword,
+        tokenVersion: { increment: 1 },
+        passwordResetRequired: false,
+      },
       select: { tokenVersion: true },
     });
 
